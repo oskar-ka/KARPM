@@ -1,0 +1,29 @@
+# Install to /etc/systemd/system/karpm.service, then:
+#   sudo systemctl daemon-reload && sudo systemctl enable --now karpm
+[Unit]
+Description=KARPM - Kleinanzeigen listing scraper and scorer
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/KARPM
+ExecStart=/home/pi/KARPM/.venv/bin/karpm daemon
+Restart=always
+RestartSec=60
+# The daemon is idle most of the time; keep it from hogging a small Pi.
+Nice=10
+IOSchedulingClass=idle
+StandardOutput=journal
+StandardError=journal
+
+# Basic hardening - it only needs its own directory.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/pi/KARPM/data
+
+[Install]
+WantedBy=multi-user.target

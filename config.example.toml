@@ -1,0 +1,65 @@
+# Copy to config.toml and edit. Secrets live in .env, not here.
+
+db_path = "data/karpm.db"
+
+# Build each search in your browser: filter by make, model, radius, price,
+# whatever you like, then paste the resulting URL here. The scraper paginates
+# from this URL, so the filters are yours to control.
+[[searches]]
+name = "yamaha-mt07"
+url = "https://www.kleinanzeigen.de/s-motorraeder-roller/yamaha-mt-07/k0c305"
+enabled = true
+max_pages = 10
+
+# [[searches]]
+# name = "yamaha-mt07-berlin"
+# url = "https://www.kleinanzeigen.de/s-motorraeder-roller/berlin/yamaha-mt-07/k0c305l3331r50"
+
+[scrape]
+# Deliberately slow. Two runs a day at this rate is a few hundred requests -
+# roughly what a person browsing for an hour would make.
+min_delay_s = 4.0
+max_delay_s = 9.0
+timeout_s = 30.0
+max_retries = 3
+block_threshold = 3
+# How often to re-open an ad we already know, to pick up edits (hours).
+refresh_after_hours = 24
+
+[images]
+enabled = true
+dir = "data/images"
+max_per_listing = 12
+max_bytes = 5000000
+
+[scoring]
+enabled = true
+model = "claude-opus-5"
+# low | medium | high | xhigh | max - how hard the model thinks per listing.
+effort = "medium"
+prompt_version = "v1"
+preferences_file = "preferences.md"
+# Photos are strong evidence about condition, and cost roughly 1.5k input
+# tokens each. Set to 0 to score on text alone.
+max_images = 2
+rescore_on_change = true
+max_per_run = 200
+
+[email]
+enabled = true
+provider = "resend"
+from_address = "karpm@yourdomain.example"
+to_addresses = ["you@example.com"]
+subject_prefix = "[KARPM]"
+# Mail immediately when a listing scores this or better...
+instant_min_score = 5
+# ...or when a 4+ listing is at least this much under the estimated fair price.
+instant_min_bargain_pct = 20
+digest_min_score = 3
+digest_max_listings = 25
+skip_empty_digest = true
+
+[schedule]
+# Local time on the Pi. Scrape twice a day, digest once in the morning.
+scrape_at = ["07:30", "19:30"]
+digest_at = ["08:00"]
