@@ -216,3 +216,9 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# KARPM local state - config, secrets, collected data
+config.toml
+preferences.md
+data/
+tests/fixtures/live_*.html
