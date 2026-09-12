@@ -29,6 +29,8 @@ data that tells you what actually sells and at what price.
 
 ## Setup
 
+Needs Python 3.10 or newer (3.10 is what Raspberry Pi OS / Ubuntu 22.04 ship).
+
 ```bash
 git clone <this repo> && cd KARPM
 python3 -m venv .venv && source .venv/bin/activate
