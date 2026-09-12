@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import os
-import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
+
+try:                                   # tomllib is stdlib from Python 3.11
+    import tomllib
+except ModuleNotFoundError:            # 3.10 and older need the backport
+    import tomli as tomllib
 
 DEFAULT_CONFIG_PATH = Path("config.toml")
 
