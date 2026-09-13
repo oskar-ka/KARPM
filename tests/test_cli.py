@@ -211,3 +211,79 @@ def test_trial_runs_at_the_testing_pace_but_polite_overrides(monkeypatch, tmp_pa
     assert fast["delays"] == (0.5, 1.5)
     polite = _run_trial_capturing(monkeypatch, tmp_path, ["--no-images", "--polite"])
     assert polite["delays"] == (4.0, 9.0)
+
+
+# --- karpm web -------------------------------------------------------------
+
+def served_on(tmp_path, argv, host="127.0.0.1", port=8080):
+    """Run cmd_web with the server stubbed out; return what it would bind."""
+    from karpm import cli
+
+    config = tmp_path / "config.toml"
+    config.write_text(f'db_path = "{tmp_path}/t.db"\n[web]\n'
+                      f'host = "{host}"\nport = {port}\n', encoding="utf-8")
+    bound = {}
+
+    class FakeApp:
+        def run(self, host, port, **_kwargs):
+            bound.update(host=host, port=port)
+
+    import karpm.web
+    real_create = karpm.web.create_app
+    karpm.web.create_app = lambda _path: FakeApp()
+    try:
+        args = cli.build_parser().parse_args(["-c", str(config)] + argv)
+        assert cli.cmd_web(args) == 0
+    finally:
+        karpm.web.create_app = real_create
+    return bound
+
+
+def test_web_binds_localhost_by_default(tmp_path):
+    assert served_on(tmp_path, ["web"])["host"] == "127.0.0.1"
+
+
+def test_lan_binds_every_interface(tmp_path):
+    assert served_on(tmp_path, ["web", "--lan"])["host"] == "0.0.0.0"
+
+
+def test_lan_wins_over_a_localhost_config(tmp_path):
+    """The flag is the whole point: opening it up without editing the config."""
+    bound = served_on(tmp_path, ["web", "--lan"], host="127.0.0.1")
+    assert bound["host"] == "0.0.0.0"
+
+
+def test_host_from_the_config_is_used(tmp_path):
+    assert served_on(tmp_path, ["web"], host="0.0.0.0")["host"] == "0.0.0.0"
+
+
+def test_the_host_flag_overrides_the_config(tmp_path):
+    bound = served_on(tmp_path, ["web", "--host", "10.0.0.5"], host="127.0.0.1")
+    assert bound["host"] == "10.0.0.5"
+
+
+def test_the_port_flag_overrides_the_config(tmp_path):
+    assert served_on(tmp_path, ["web", "--port", "9000"])["port"] == 9000
+
+
+def test_host_and_lan_cannot_both_be_given():
+    """They contradict each other; better to say so than to pick one."""
+    from karpm.cli import build_parser
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["web", "--host", "10.0.0.5", "--lan"])
+
+
+def test_web_has_no_pace_flags():
+    """It makes no requests, so --fast would be a flag that does nothing."""
+    from karpm.cli import build_parser
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["web", "--fast"])
+
+
+def test_the_banner_names_the_address_it_is_reachable_on(tmp_path, capsys, monkeypatch):
+    from karpm.web import address
+    monkeypatch.setattr(address, "lan_address", lambda: "192.168.1.42")
+    served_on(tmp_path, ["web", "--lan"])
+    printed = capsys.readouterr().out
+    assert "http://192.168.1.42:8080" in printed
+    assert "0.0.0.0" not in printed

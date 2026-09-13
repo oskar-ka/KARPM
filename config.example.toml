@@ -123,13 +123,17 @@ digest_at = ["08:00"]
 
 [web]
 # `karpm web` serves the status page, the listings browser and these settings.
-# It binds to localhost, so only the Pi itself can reach it; get at it from
-# your laptop with an SSH tunnel:
+# It binds to localhost, so only this machine can reach it. From another device,
+# either tunnel in, which exposes nothing:
 #
 #     ssh -N -L 8080:localhost:8080 pi@raspberrypi.local
 #
-# then open http://localhost:8080 there. Binding to 0.0.0.0 instead exposes it
-# to everyone on the network, and the page has no login: whoever opens it can
-# change what is scraped and spend Claude credits by re-scoring.
+# and open http://localhost:8080 there; or set host to "0.0.0.0" below (or run
+# `karpm web --lan` once) to open it to your whole network. The page has no
+# login, so anyone on that network can change what is scraped and spend Claude
+# credits by re-scoring.
+#
+# Unlike the rest of this file, these two are read at startup: changing them
+# needs `karpm web` restarted.
 host = "127.0.0.1"
 port = 8080

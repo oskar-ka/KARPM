@@ -374,17 +374,15 @@ def cmd_trial(args) -> int:
 
 def cmd_web(args) -> int:
     """Serve the web UI. Separate process from the daemon; they meet in the db."""
-    from .web import create_app
+    from .web import address, create_app
 
     conf = load_config(args.config)
-    host = args.host or conf.web.host
+    host = "0.0.0.0" if args.lan else (args.host or conf.web.host)
     port = args.port or conf.web.port
     app = create_app(args.config)
 
-    print(f"KARPM web UI on http://{host}:{port}")
-    if host not in ("127.0.0.1", "localhost"):
-        print("  reachable from the network, and it has no login: anyone who can\n"
-              "  open it can change your searches and spend Claude credits.")
+    for line in address.describe(host, port):
+        print(line)
     app.run(host=host, port=port, debug=args.debug, use_reloader=args.debug)
     return 0
 
@@ -547,9 +545,15 @@ def build_parser() -> argparse.ArgumentParser:
                          help="also print the scoring prompt for the first listing")
     p_trial.set_defaults(func=cmd_trial)
 
-    p_web = sub.add_parser("web", parents=[pace_parent],
+    # No pace_parent: this command makes no requests, so --fast and --polite
+    # would be flags that do nothing.
+    p_web = sub.add_parser("web",
                            help="serve the web UI (status, listings, config)")
-    p_web.add_argument("--host", help="override web.host from the config")
+    web_where = p_web.add_mutually_exclusive_group()
+    web_where.add_argument("--host", help="override web.host from the config")
+    web_where.add_argument("--lan", action="store_true",
+                           help="bind every interface so other devices on your "
+                                "network can open it; it has no login")
     p_web.add_argument("--port", type=int, help="override web.port from the config")
     p_web.add_argument("--debug", action="store_true", help="Flask debug mode and reloader")
     p_web.set_defaults(func=cmd_web)

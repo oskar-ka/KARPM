@@ -351,9 +351,14 @@ karpm web
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--host ADDR` | `web.host`, `127.0.0.1` | Address to bind. |
+| `--lan` | off | Bind every interface, so other devices on your network can open it. Same as `--host 0.0.0.0`. |
+| `--host ADDR` | `web.host`, `127.0.0.1` | Address to bind. Not with `--lan`. |
 | `--port N` | `web.port`, `8080` | Port to listen on. |
 | `--debug` | off | Flask debug mode and the auto-reloader. Development only. |
+
+On startup it prints the address to open. Bound to every interface that is the
+machine's own address on the network — `http://192.168.1.42:8080`, not
+`http://0.0.0.0:8080`, which is not an address anything can browse to.
 
 It is a **separate process from the daemon** and holds no privilege the daemon
 has: the two meet only in the database. The buttons queue a command in the
@@ -396,18 +401,36 @@ so its built-in default applies, which is not the same as an empty value. Edits
 take effect without a restart, since the daemon rereads its config every cycle;
 only `web.port` needs `karpm web` restarted.
 
-**There is no login.** Bound to `127.0.0.1` that is fine, because only the Pi
-itself can reach it. Reach it from a laptop with an SSH tunnel rather than by
-binding wider:
+### Reaching it from another device
+
+**There is no login.** Bound to `127.0.0.1` — the default — that is fine,
+because only the machine itself can reach it. There are two ways to change that,
+and they are not equivalent.
+
+**An SSH tunnel** keeps the server on localhost and forwards one port to the
+device you are sitting at. Nothing is exposed, and it works from outside the
+house if you can already SSH in:
 
 ```bash
 ssh -N -L 8080:localhost:8080 pi@raspberrypi.local   # then open http://localhost:8080
 ```
 
-Binding to `0.0.0.0` hands everyone on the network the ability to change what
-you scrape and to spend Claude credits by re-scoring; the command prints a
-warning when you do. `deploy/karpm-web.service` runs it under systemd alongside
-`karpm.service`.
+**`karpm web --lan`** opens it to every device on your network — every phone
+and laptop on that Wi-Fi, guests included. It is not reachable from the internet
+unless you also forward the port on your router, which is a bad idea for a page
+with no login. On a home network you trust this is the convenient option; on
+shared or student Wi-Fi, use the tunnel.
+
+To make it permanent, set `host = "0.0.0.0"` under `[web]` and restart — the
+host and port are read at startup, so a change there needs `karpm web` restarted
+where the rest of the config does not.
+
+The machine's address can change when the router hands out new DHCP leases; a
+static lease (a DHCP reservation, in the router's admin page) pins it. On a Pi,
+`raspberrypi.local` usually works from phones and Macs, less reliably from
+Windows.
+
+`deploy/karpm-web.service` runs it under systemd alongside `karpm.service`.
 
 The server is Flask's own, which is right for one person on localhost and not
 meant for anything exposed.

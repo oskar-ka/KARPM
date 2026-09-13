@@ -1,6 +1,5 @@
 """The daemon's side of the web UI: the command queue, pause, and the heartbeat."""
 
-import json
 import threading
 import time
 

@@ -173,11 +173,20 @@ KARPM from starting is refused before anything is written.
 
 It is a separate process that shares only the database with the daemon, so the
 UI holds no privilege the daemon has, and restarting either one leaves the other
-alone. It binds to localhost and **has no login** — from a laptop, tunnel in
-rather than binding wider:
+alone.
+
+It binds to localhost and **has no login**. To use it from another device,
+either tunnel in — nothing is exposed, and it works from outside the house too:
 
 ```bash
 ssh -N -L 8080:localhost:8080 pi@raspberrypi.local   # then http://localhost:8080
+```
+
+or open it to your own network, which is convenient and hands the controls to
+everyone on that Wi-Fi:
+
+```bash
+karpm web --lan      # prints the address to open, e.g. http://192.168.1.42:8080
 ```
 
 ## Email
