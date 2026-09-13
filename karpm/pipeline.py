@@ -428,6 +428,11 @@ def _check_listing(fetcher, row) -> tuple[str, str | None]:
 
 def run_scrape(conf, conn, fetcher: Fetcher | None = None) -> dict:
     fetcher = fetcher or Fetcher(conf.scrape)
+    # The daemon rereads its config every cycle, so a search added in the web UI
+    # arrives here without a row in `searches`. Without this the scrape still
+    # runs, but the UPDATE below matches nothing and the search never shows a
+    # last run - working, and looking like it never happened.
+    db.sync_searches(conn, conf.searches)
     run_id = db.start_run(conn, "scrape")
     totals = {"seen": 0, "new": 0, "changed": 0, "delisted": 0, "skipped_wanted": 0,
               "still_live": 0, "unverified": 0, "unchanged": 0}

@@ -163,3 +163,19 @@ def test_the_heartbeat_keeps_beating_on_its_own(ready):
         stop.set()
         thread.join(timeout=5)
     assert not thread.is_alive()
+
+
+def test_a_search_the_table_has_never_seen_still_records_its_run(ready):
+    """The daemon rereads its config every cycle, so a search added in the web
+    UI arrives at a scrape with no row to update. It would be scraped and then
+    look like it had never run."""
+    conf, conn = ready
+    conn.execute("DELETE FROM searches")
+    conn.commit()
+
+    pipeline.run_scrape(conf, conn, FakeFetcher())
+
+    row = conn.execute("SELECT * FROM searches WHERE name = 'mt07'").fetchone()
+    assert row is not None, "the scrape should have registered the search"
+    assert row["last_run_at"], "and recorded when it ran"
+    assert "seen" in row["last_status"]

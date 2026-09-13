@@ -311,3 +311,44 @@ def test_pausing_is_visible_on_the_page(client, app):
     _, config_path, _ = app
     client.post("/control/pause")
     assert b"paused" in client.get("/status-fragment").get_data()
+
+
+# --- opening an older database -------------------------------------------
+
+def test_a_database_from_before_the_web_ui_is_migrated_on_startup(tmp_path):
+    """The failure this reproduces: `karpm web` against a database written by an
+    older version 500s on every page, because only the CLI applied the schema."""
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(CONFIG.format(
+        db=tmp_path / "old.db", url=SEARCH_URL, images=tmp_path / "images",
+        prefs=tmp_path / "preferences.md", debug=tmp_path / "debug",
+    ), encoding="utf-8")
+
+    conn = db.connect(str(tmp_path / "old.db"))
+    db.init_db(conn)
+    # Wind it back to a v2 database: no commands, no app_state.
+    conn.execute("DROP TABLE commands")
+    conn.execute("DROP TABLE app_state")
+    conn.execute("PRAGMA user_version=2")
+    conn.commit()
+    conn.close()
+
+    client = create_app(str(config_path)).test_client()
+    assert client.get("/").status_code == 200
+    assert client.get("/status-fragment").status_code == 200
+
+    with opened(config_path) as conn:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == db.SCHEMA_VERSION
+        # And the queue works, rather than only the pages loading.
+        db.queue_command(conn, "scrape")
+        assert db.claim_command(conn)["command"] == "scrape"
+
+
+def test_a_search_added_in_the_ui_appears_on_the_dashboard(client, app):
+    """Saving writes the config file; the dashboard reads the searches table."""
+    _, config_path, _ = app
+    client.post("/searches/save", data={
+        "name-0": "mt07", "url-0": SEARCH_URL, "enabled-0": "1",
+        "name-1": "z900", "url-1": "https://example.com/z900", "enabled-1": "1",
+    })
+    assert b"z900" in client.get("/").get_data()

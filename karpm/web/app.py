@@ -43,6 +43,21 @@ def create_app(config_path: str = "config.toml") -> Flask:
     def connect():
         return db.connect(conf().db_path)
 
+    # Every CLI command applies the schema when it opens the database; this
+    # process has to as well. Without it, a database written before a schema
+    # change is missing the tables the UI reads and every page is a 500.
+    try:
+        startup = connect()
+        try:
+            db.init_db(startup)
+            db.sync_searches(startup, conf().searches)
+        finally:
+            startup.close()
+    except Exception as exc:
+        # Keep serving: /config reads the file directly, so the UI is still the
+        # place to fix a config that is the reason this failed.
+        log.error("could not open the database at startup: %s", exc)
+
     # --- status ---------------------------------------------------------
 
     @app.route("/")
@@ -167,6 +182,11 @@ def create_app(config_path: str = "config.toml") -> Flask:
         except (OSError, ValueError) as exc:
             flash(f"could not save: {exc}", "error")
             return redirect(url_for("searches"))
+        conn = connect()
+        try:
+            db.sync_searches(conn, conf().searches)
+        finally:
+            conn.close()
         flash(f"saved {len(entries)} search(es) - the daemon rereads the config "
               "on its next cycle", "ok")
         return redirect(url_for("searches"))
