@@ -16,8 +16,8 @@ from pathlib import Path
 import anthropic
 from pydantic import BaseModel, Field
 
-from . import db, images
-from .parse.fields import ATTRIBUTE_MAP, slug
+from . import db, derived, images
+from .parse.fields import is_mapped
 
 log = logging.getLogger(__name__)
 
@@ -83,14 +83,7 @@ def load_preferences(path: str | Path) -> str:
     return path.read_text(encoding="utf-8").strip()
 
 
-def _is_mapped(label: str) -> bool:
-    """True if this raw attribute already has a typed column of its own."""
-    normalised = slug(label)
-    return (normalised in ATTRIBUTE_MAP
-            or (normalised.endswith("bis") and normalised[:-3] in ATTRIBUTE_MAP))
-
-
-def listing_to_text(row, comparables: dict | None) -> str:
+def listing_to_text(row, comparables: dict | None, worked_out: dict | None = None) -> str:
     """Render a listing row as compact facts for the prompt."""
     def fmt(label: str, value, suffix: str = "") -> str | None:
         return f"{label}: {value}{suffix}" if value not in (None, "") else None
@@ -121,6 +114,12 @@ def listing_to_text(row, comparables: dict | None) -> str:
             fmt("Condition", row["condition"]),
             fmt("Damaged", "yes" if row["damaged"] else None),
             fmt("Full service history", "yes" if row["full_service_hist"] else None),
+            fmt("Colour", row["color"]),
+            fmt("Final drive", row["drive_type"]),
+            fmt("Transmission", row["transmission"]),
+            fmt("Fuel", row["fuel_type"]),
+            fmt("Licence plate", row["plate"]),
+            fmt("Seasonal registration", row["plate_season"]),
             fmt("Seller", row["seller_type"]),
             fmt("Location", row["location"]),
             fmt("Posted", row["posted_at"]),
@@ -128,10 +127,38 @@ def listing_to_text(row, comparables: dict | None) -> str:
         ]),
     ]
 
+    equipment = json.loads(row["equipment_json"] or "[]") if row["equipment_json"] else []
+    if equipment:
+        lines.append("Listed equipment: " + ", ".join(equipment))
+
+    # Worked out rather than read off the page. The model could derive these
+    # itself, but it would be doing arithmetic instead of judging a motorcycle.
+    if worked_out:
+        facts = []
+        if worked_out.get("km_per_year"):
+            facts.append(f"{worked_out['km_per_year']:,} km/year".replace(",", "."))
+        if worked_out.get("age_years"):
+            facts.append(f"{worked_out['age_years']} years old")
+        months = worked_out.get("hu_months_left")
+        if months is not None:
+            facts.append(f"HU expired {-months} month(s) ago" if months < 0
+                         else f"{months} month(s) of HU left")
+        if worked_out.get("distance_km") is not None:
+            facts.append(f"about {worked_out['distance_km']} km away")
+        if worked_out.get("days_on_market") is not None:
+            facts.append(f"{worked_out['days_on_market']} day(s) on the market")
+        if worked_out.get("price_drop"):
+            euros, percent = worked_out["price_drop"]
+            facts.append(f"asking price cut by {euros} EUR ({percent}%) since it went up")
+        if worked_out.get("photo_count"):
+            facts.append(f"{worked_out['photo_count']} photo(s)")
+        if facts:
+            lines.append("Worked out: " + "; ".join(facts))
+
     # Only pass through attributes that are not already shown as typed fields
     # above, so the model does not read the same fact twice.
     extra = json.loads(row["attributes_json"] or "{}")
-    unmapped = {k: v for k, v in extra.items() if not _is_mapped(k)}
+    unmapped = {k: v for k, v in extra.items() if not is_mapped(k)}
     if unmapped:
         lines.append("Other listed attributes: " + ", ".join(f"{k}: {v}" for k, v in unmapped.items()))
 
@@ -172,15 +199,18 @@ def _image_blocks(conn, listing_id: str, max_images: int) -> list[dict]:
 
 
 class Scorer:
-    def __init__(self, cfg, preferences: str, client: anthropic.Anthropic | None = None) -> None:
+    def __init__(self, cfg, preferences: str, client: anthropic.Anthropic | None = None,
+                 home_plz: str | None = None) -> None:
         self.cfg = cfg
         self.preferences = preferences
+        self.home_plz = home_plz
         self.client = client or anthropic.Anthropic()
 
     def score_listing(self, conn, row) -> dict:
         comparables = db.comparable_stats(conn, row)
+        worked_out = derived.summarise(conn, row, self.home_plz)
         content: list[dict] = [
-            {"type": "text", "text": listing_to_text(row, comparables)},
+            {"type": "text", "text": listing_to_text(row, comparables, worked_out)},
             *_image_blocks(conn, row["id"], self.cfg.max_images),
         ]
 
@@ -217,7 +247,7 @@ class Scorer:
         }
 
 
-def score_pending(conn, cfg) -> list[dict]:
+def score_pending(conn, cfg, home_plz: str | None = None) -> list[dict]:
     """Score every listing that needs it. Returns the scores written."""
     if not cfg.enabled:
         return []
@@ -229,7 +259,7 @@ def score_pending(conn, cfg) -> list[dict]:
     if marked:
         log.info("preferences.md changed - %s listing(s) marked for re-scoring", marked)
 
-    scorer = Scorer(cfg, preferences)
+    scorer = Scorer(cfg, preferences, home_plz=home_plz)
     rows = db.unscored_listings(conn, cfg.rescore_on_change, cfg.prompt_version, cfg.max_per_run)
     written = []
 

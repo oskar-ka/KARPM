@@ -195,6 +195,10 @@ class ScheduleConfig:
 @dataclass
 class Config:
     db_path: str = "data/karpm.db"
+    # Your postcode. Distance to a listing is worked out from this - a bike 40 km
+    # away is a Saturday morning, the same bike 500 km away is a weekend and a
+    # trailer. Blank leaves every distance unknown rather than guessed.
+    home_plz: str | None = None
     searches: list[SearchConfig] = field(default_factory=list)
     scrape: ScrapeConfig = field(default_factory=ScrapeConfig)
     trial: TrialConfig = field(default_factory=TrialConfig)
@@ -289,8 +293,11 @@ def load_config(path: Path | str = DEFAULT_CONFIG_PATH) -> Config:
 
     db_path = raw.get("db_path", Config.db_path)
     _check("", "db_path", str, db_path)
+    home_plz = raw.get("home_plz", Config.home_plz)
+    _check("", "home_plz", str | None, home_plz)
     return Config(
         db_path=db_path,
+        home_plz=home_plz,
         searches=[_subset(SearchConfig, s, f"searches[{i}]")
                   for i, s in enumerate(raw.get("searches", []))],
         scrape=_subset(ScrapeConfig, raw.get("scrape", {}), "scrape"),

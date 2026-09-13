@@ -18,12 +18,15 @@ from urllib.parse import urljoin
 
 from bs4 import BeautifulSoup
 
+from . import syndicated
 from .fields import (
+    MONTHS_DE,
     ad_id_from_url,
     apply_attributes,
     clean,
     html_to_text,
     parse_location,
+    parse_plate,
     parse_posted,
     parse_price,
     parse_seller_type,
@@ -147,6 +150,29 @@ def _jsonld(soup) -> list[dict]:
     return [b for b in blocks if isinstance(b, dict)]
 
 
+# Labels where a value naming a month beats one naming only a year.
+_DATED_LABELS = ("erstzulassung", "hu", "tuv", "tüv")
+
+# What the page calls the category. True of every ad in a motorcycle search, so
+# it says nothing; the block's "Enduro/Reiseenduro" says something.
+_GENERIC_VALUES = {"motorrad", "motorräder", "motorraeder", "motorroller", "sonstige"}
+
+
+def _more_precise(label: str, candidate: str, current: str) -> bool:
+    """Should the block's value replace the one the page already gave?"""
+    if current.strip().lower() in _GENERIC_VALUES \
+            and candidate.strip().lower() not in _GENERIC_VALUES:
+        return True
+    if not any(word in label.lower() for word in _DATED_LABELS):
+        return False
+    return _has_month(candidate) and not _has_month(current)
+
+
+def _has_month(text: str) -> bool:
+    return ("/" in text or "." in text
+            or any(month in text.lower() for month in MONTHS_DE))
+
+
 def parse_detail_page(html: str, url: str | None = None) -> dict:
     """Parse an ad page into a dict matching the `listings` table columns."""
     soup = _soup(html)
@@ -266,6 +292,29 @@ def parse_detail_page(html: str, url: str | None = None) -> dict:
 
     # --- layer 4: identity and typed fields ---
     out["id"] = _ad_id(soup, url)
+    # An ad cross-posted from mobile.de carries a spec sheet inside its
+    # description. Read as prose it is noise in the scoring prompt; read as data
+    # it fills columns that would otherwise be NULL. Done last, so every source
+    # of a description has been tried and every page attribute is already in.
+    spec, equipment, own_words = syndicated.split(out.get("description"))
+    if spec:
+        out["description"] = own_words
+        out["equipment_json"] = equipment
+        # The page's own attributes win, being structured at the source - except
+        # where the block says the same thing more precisely. A page that gives
+        # "Erstzulassung: 2004" against the block's "8/2004" is eight months
+        # vaguer, and that feeds straight into the bike's age.
+        for label, value in spec.items():
+            if label not in raw_attrs or _more_precise(label, value, raw_attrs[label]):
+                raw_attrs[label] = value
+
+    # A plate is only read where the text says that is what it is; see
+    # parse_plate. Most ads never mention one - the usual source is the photos,
+    # which only the scoring model sees.
+    plate, season = parse_plate(out.get("description"))
+    if plate:
+        out["plate"], out["plate_season"] = plate, season
+
     fields, attr_warnings = apply_attributes(raw_attrs)
     out.update(fields)
     out["attributes_json"] = raw_attrs

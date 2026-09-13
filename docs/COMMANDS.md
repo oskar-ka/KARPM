@@ -49,6 +49,11 @@ schedule running for months at that rate is what would get the Pi blocked.
 Images are paced separately because they come from a static CDN rather than the
 search backend, and they are the large majority of a run's requests.
 
+`home_plz` is your own postcode. Distance to each listing is worked out from it
+and shown to the scoring model; leave it out and distance is simply unknown
+rather than guessed. The postcode table is shipped with the package (GeoNames,
+CC BY 4.0), so nothing is looked up over the network.
+
 Secrets are **not** in the config file. They are read from the environment, or
 from a `.env` file in the working directory: `ANTHROPIC_API_KEY` for scoring and
 `RESEND_API_KEY` for email.

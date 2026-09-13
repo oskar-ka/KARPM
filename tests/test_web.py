@@ -757,3 +757,63 @@ def test_saving_the_same_preferences_marks_nothing(client, app):
     assert b"nothing was marked" in resp.get_data()
     with opened(config_path) as conn:
         assert conn.execute("SELECT SUM(needs_rescore) n FROM listings").fetchone()["n"] == 0
+
+
+# --- the listing page's panels -------------------------------------------
+
+def test_a_fact_is_not_shown_twice(client, app):
+    """The reason the panels were rearranged: every attribute used to be listed
+    again underneath the typed fields it had already become."""
+    _, config_path, _ = app
+    with opened(config_path) as conn:
+        conn.execute("UPDATE listings SET attributes_json = ? WHERE id = '2847612345'",
+                     ('{"Kilometerstand": "18.400 km", "Getriebe": "Manuell"}',))
+        conn.commit()
+    page = client.get("/listing/2847612345").get_data(as_text=True)
+    assert page.count("Kilometerstand") == 0, "already shown as mileage"
+    assert "Getriebe" not in page or "Manuell" in page
+
+
+def test_an_attribute_with_no_field_is_still_shown(client, app):
+    """It is how a new Kleinanzeigen attribute gets noticed."""
+    _, config_path, _ = app
+    with opened(config_path) as conn:
+        conn.execute("UPDATE listings SET attributes_json = ? WHERE id = '2847612345'",
+                     ('{"Sonderausstattung": "Koffersatz"}',))
+        conn.commit()
+    page = client.get("/listing/2847612345").get_data(as_text=True)
+    assert "Sonderausstattung" in page and "Koffersatz" in page
+
+
+def test_a_value_that_would_not_parse_is_still_shown(client, app):
+    """"HU: Neu" is mapped to a column and is not a date. Filtering it out as
+    "already shown" would lose the only thing the ad said about the TUEV."""
+    _, config_path, _ = app
+    with opened(config_path) as conn:
+        conn.execute("UPDATE listings SET attributes_json = ?, inspection_until = NULL "
+                     "WHERE id = '2847612345'", ('{"HU": "Neu"}',))
+        conn.commit()
+    assert b"Neu" in client.get("/listing/2847612345").get_data()
+
+
+def test_the_worked_out_panel_shows_what_it_can(client, app):
+    _, config_path, _ = app
+    with opened(config_path) as conn:
+        conn.execute("UPDATE listings SET km = 56000, first_reg_date = '2004-08-01', "
+                     "postcode = '80331' WHERE id = '2847612345'")
+        conn.commit()
+    page = client.get("/listing/2847612345").get_data(as_text=True)
+    assert "km per year" in page
+    assert "worked out" in page
+
+
+def test_distance_is_shown_only_when_home_is_set(client, app):
+    _, config_path, _ = app
+    with opened(config_path) as conn:
+        conn.execute("UPDATE listings SET postcode = '80331' WHERE id = '2847612345'")
+        conn.commit()
+    assert b"from home" not in client.get("/listing/2847612345").get_data()
+
+    config_path.write_text('home_plz = "22765"\n' + config_path.read_text(encoding="utf-8"),
+                           encoding="utf-8")
+    assert b"from home" in client.get("/listing/2847612345").get_data()

@@ -27,4 +27,4 @@ build-backend = "setuptools.build_meta"
 include = ["karpm*"]
 
 [tool.setuptools.package-data]
-karpm = ["schema.sql", "web/templates/*.html", "web/static/*"]
+karpm = ["schema.sql", "web/templates/*.html", "web/static/*", "data/*.csv.gz"]

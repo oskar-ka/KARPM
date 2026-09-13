@@ -2,6 +2,12 @@
 
 db_path = "data/karpm.db"
 
+# Your postcode. Distance to each listing is worked out from this and shown to
+# the scoring model - a bike 40 km away is a Saturday morning, the same bike
+# 500 km away is a weekend and a trailer. Leave it out and distance is simply
+# unknown; nothing is guessed.
+home_plz = "22765"
+
 # Build each search in your browser: filter by make, model, radius, price,
 # whatever you like, then paste the resulting URL here. The scraper paginates
 # from this URL, so the filters are yours to control.

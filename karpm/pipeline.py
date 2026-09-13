@@ -479,7 +479,7 @@ def run_scrape(conf, conn, fetcher: Fetcher | None = None) -> dict:
 def run_scoring_and_alerts(conf, conn) -> dict:
     """Score whatever needs scoring, then mail anything that clears the bar."""
     run_id = db.start_run(conn, "score")
-    scored = scoring.score_pending(conn, conf.scoring)
+    scored = scoring.score_pending(conn, conf.scoring, conf.home_plz)
     alerts = 0
     alert_failures = 0
 

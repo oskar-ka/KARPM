@@ -220,7 +220,10 @@ __marimo__/
 # KARPM local state - config, secrets, collected data
 config.toml
 preferences.md
-data/
+# Anchored: this is the runtime data directory at the root of the checkout.
+# Unanchored it also swallowed karpm/data/, the reference tables shipped with
+# the package, which would then be missing from every install.
+/data/
 tests/fixtures/live_*.html
 # ...except the trimmed captures committed as regression fixtures.
 !tests/fixtures/live_search_astro.html

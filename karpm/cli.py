@@ -9,7 +9,7 @@ import re
 import sys
 from pathlib import Path
 
-from . import daemon, db, images, mailer, pipeline, scoring, trial
+from . import daemon, db, derived, images, mailer, pipeline, scoring, trial
 from .config import SearchConfig, load_config
 from .http import Blocked, Fetcher
 from .parse.detail import parse_detail_page
@@ -272,7 +272,8 @@ def cmd_score_one(args) -> int:
         return 1
     scorer = scoring.Scorer(conf.scoring, scoring.load_preferences(conf.scoring.preferences_file))
     if args.show_prompt:
-        print(scoring.listing_to_text(row, db.comparable_stats(conn, row)))
+        print(scoring.listing_to_text(row, db.comparable_stats(conn, row),
+                                      derived.summarise(conn, row, conf.home_plz)))
         return 0
     score = scorer.score_listing(conn, row)
     print(json.dumps(score, indent=2, ensure_ascii=False))
@@ -366,7 +367,8 @@ def cmd_trial(args) -> int:
         print("\n" + "=" * 72)
         print(f"PROMPT THAT WOULD BE SENT FOR {listing_id} (not sent - no API call)")
         print("=" * 72)
-        print(scoring.listing_to_text(row, db.comparable_stats(conn, row)))
+        print(scoring.listing_to_text(row, db.comparable_stats(conn, row),
+                                      derived.summarise(conn, row, conf.home_plz)))
 
     conn.close()
     return 0 if report.ok else 1

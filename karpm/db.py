@@ -13,12 +13,12 @@ from typing import Any, Iterable
 
 log = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 # Bump when a parser change means a stored row would now come out differently
 # and cannot be corrected in place. Every listing written by an older version is
 # then marked for re-fetching. See "Keeping stored rows honest" in CLAUDE.md.
-PARSER_VERSION = 1
+PARSER_VERSION = 2
 
 
 def utcnow() -> str:
@@ -53,6 +53,13 @@ MIGRATIONS = {
         ("needs_refetch", "INTEGER NOT NULL DEFAULT 0"),
         ("needs_rescore", "INTEGER NOT NULL DEFAULT 0"),
         ("ignored", "INTEGER NOT NULL DEFAULT 0"),
+        ("color", "TEXT"),
+        ("fuel_type", "TEXT"),
+        ("drive_type", "TEXT"),
+        ("transmission", "TEXT"),
+        ("equipment_json", "TEXT"),
+        ("plate", "TEXT"),
+        ("plate_season", "TEXT"),
     ],
 }
 
@@ -222,7 +229,8 @@ def sync_searches(conn: sqlite3.Connection, searches: Iterable[Any]) -> None:
 LISTING_COLUMNS = (
     "id url search_name title description price_eur price_kind make model bike_type "
     "model_year first_reg_date first_reg_year km hp ccm owners inspection_until "
-    "condition damaged full_service_hist seller_type seller_name seller_id location "
+    "condition damaged full_service_hist color fuel_type drive_type transmission "
+    "equipment_json plate plate_season seller_type seller_name seller_id location "
     "postcode posted_at view_count attributes_json parse_warnings content_hash"
 ).split()
 
@@ -243,6 +251,8 @@ def upsert_listing(conn: sqlite3.Connection, data: dict) -> str:
     )
     if isinstance(data.get("attributes_json"), (dict, list)):
         data["attributes_json"] = json.dumps(data["attributes_json"], ensure_ascii=False)
+    if isinstance(data.get("equipment_json"), (list, tuple)):
+        data["equipment_json"] = json.dumps(list(data["equipment_json"]), ensure_ascii=False)
     if isinstance(data.get("parse_warnings"), (list, tuple)):
         data["parse_warnings"] = json.dumps(list(data["parse_warnings"]), ensure_ascii=False)
 

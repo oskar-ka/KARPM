@@ -81,16 +81,22 @@ def test_the_astro_ad_page_yields_text_not_markup():
     """The page this was reported from. Its payload is HTML, and every other
     layer of the parser would have been fine."""
     html = (FIXTURES / "live_detail_astro.html").read_text(encoding="utf-8")
-    description = parse_detail_page(html, "https://x/1")["description"]
+    parsed = parse_detail_page(html, "https://x/1")
+    description = parsed["description"]
 
     assert "<br" not in description
     assert "&#x" not in description
     assert "</span>" not in description
-    # The content is all still there, a line at a time.
+    # The seller's own words are all still there, a line at a time.
     assert description.startswith("BMW R120Gs im gepflegtem Zustand")
     assert "letzter Service bei 55200Km" in description
-    assert "Enduro/Reiseenduro" in description
-    assert "Erstzulassung: 8/2004" in description
+    assert "Besichtigung nur nach Terminabsprache" in description
+
+    # The spec sheet that used to sit at the end of this text is now parsed into
+    # columns instead - including the entity that made it unreadable.
+    assert parsed["bike_type"] == "Enduro/Reiseenduro"
+    assert parsed["first_reg_date"] == "2004-08-01"
+    assert "Erstzulassung" not in description
 
 
 @pytest.mark.parametrize("fixture", ["live_detail_bmw_fixed.html", "live_detail_bmw_vb.html"])

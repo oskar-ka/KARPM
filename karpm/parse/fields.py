@@ -195,10 +195,40 @@ ATTRIBUTE_MAP = {
     "tuvbis": "inspection_until",
     "hauptuntersuchung": "inspection_until",
     "anzahlfahrzeughalter": "owners",
+    "anzahlderfahrzeughalter": "owners",
     "fahrzeughalter": "owners",
     "halter": "owners",
     "scheckheftgepflegt": "full_service_hist",
+    "farbe": "color",
+    "kraftstoffart": "fuel_type",
+    "kraftstoff": "fuel_type",
+    "antriebsart": "drive_type",
+    "antrieb": "drive_type",
+    "getriebe": "transmission",
+    "getriebeart": "transmission",
 }
+
+
+def mapped_column(label: str) -> str | None:
+    """Which typed field a raw label feeds, if any."""
+    normalised = slug(label)
+    key = ATTRIBUTE_MAP.get(normalised)
+    if key is None and normalised.endswith("bis"):
+        key = ATTRIBUTE_MAP.get(normalised[: -len("bis")])
+    # One key, two columns; the date is the one worth checking for.
+    return "first_reg_date" if key == "first_reg" else key
+
+
+def is_mapped(label: str) -> bool:
+    """True if this raw attribute already has a typed column of its own.
+
+    Both the scoring prompt and the listing page use this to avoid showing the
+    same fact twice. They each had their own idea of it once, which is how the
+    page came to list every attribute again under the typed ones.
+    """
+    normalised = slug(label)
+    return (normalised in ATTRIBUTE_MAP
+            or (normalised.endswith("bis") and normalised[:-3] in ATTRIBUTE_MAP))
 
 
 def apply_attributes(attrs: dict[str, str]) -> tuple[dict, list[str]]:
@@ -232,10 +262,16 @@ def apply_attributes(attrs: dict[str, str]) -> tuple[dict, list[str]]:
             if d:
                 fields["first_reg_date"] = d.isoformat()
                 fields["first_reg_year"] = d.year
+            elif clean(value):
+                warnings.append(f"unreadable:{label}={clean(value)}")
         elif key == "inspection_until":
             d = parse_month_year(value)
             if d:
                 fields["inspection_until"] = d.isoformat()
+            elif clean(value):
+                # "HU: Neu" is a real answer that is not a date. Dropping it
+                # silently would lose the one thing the ad said about the TÜV.
+                warnings.append(f"unreadable:{label}={clean(value)}")
         elif key == "condition":
             fields["condition"] = clean(value)
             lowered = (value or "").lower()
@@ -245,10 +281,45 @@ def apply_attributes(attrs: dict[str, str]) -> tuple[dict, list[str]]:
                 fields["damaged"] = 1
         elif key == "full_service_hist":
             fields["full_service_hist"] = 0 if "nein" in (value or "").lower() else 1
-        elif key in ("make", "model", "bike_type"):
+        elif key in ("make", "model", "bike_type", "color", "fuel_type",
+                     "drive_type", "transmission"):
             fields[key] = clean(value)
 
     for required in ("km", "first_reg_year"):
         if fields.get(required) is None:
             warnings.append(f"missing:{required}")
     return fields, warnings
+
+
+# A German plate: district letters, one or two identifying letters, up to four
+# digits - optionally followed by the two numbers of a Saisonkennzeichen.
+PLATE_RE = re.compile(
+    r"\b([A-ZÄÖÜ]{1,3})[-\s]?([A-Z]{1,2})[-\s]?(\d{1,4})\b(?:\s*(\d{1,2})\s*/\s*(\d{1,2}))?"
+)
+# Only read a plate where the text says that is what it is. The pattern alone
+# matches things like "TUV AU 2024" and half the model names on the site, and a
+# wrong plate is worse than none: it would be read as this bike's history.
+PLATE_CONTEXT = re.compile(r"(kennzeichen|nummernschild|amtliches?\s+kennzeichen)\s*:?\s*",
+                           re.IGNORECASE)
+
+
+def parse_plate(text: str | None) -> tuple[str | None, str | None]:
+    """A licence plate and its season, from text that says it is one.
+
+    Returns (plate, season) - season being "04/10" for a Saisonkennzeichen,
+    which says the bike is only registered April to October. That is worth
+    knowing on its own: it means winter storage, lower yearly mileage and a
+    cheaper insurance band.
+    """
+    if not text:
+        return None, None
+    context = PLATE_CONTEXT.search(text)
+    if not context:
+        return None, None
+    found = PLATE_RE.match(text[context.end():].strip())
+    if not found:
+        return None, None
+    district, letters, digits, from_month, to_month = found.groups()
+    plate = f"{district}-{letters} {digits}"
+    season = f"{int(from_month):02d}/{int(to_month):02d}" if from_month and to_month else None
+    return plate, season

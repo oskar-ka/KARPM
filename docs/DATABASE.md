@@ -337,6 +337,46 @@ is just running any command — existing rows and their history are preserved.
 | 3 | `commands` and `app_state` — the web UI's queue and the daemon's status, added with `karpm web`. |
 | 4 | No schema change. Descriptions stored as markup are rewritten as text, and their `content_hash` recomputed. |
 | 5 | `listings.parser_version`, `needs_refetch`, `needs_rescore`, `ignored` — the staleness flags. |
+| 6 | `listings.color`, `fuel_type`, `drive_type`, `transmission`, `equipment_json`, `plate`, `plate_season` — filled from the syndicated spec block. `PARSER_VERSION` 2. |
+
+## Two kinds of fact
+
+A row holds two different things, and the listing page and the scoring prompt
+both keep them apart.
+
+**Read off the page** are the typed columns and `attributes_json`. The typed
+columns are what can be sorted and filtered on; `attributes_json` is the raw
+`{label: value}` capture behind them, kept so that a label Kleinanzeigen starts
+emitting is noticed rather than dropped. A raw attribute is shown only when it
+did *not* end up in a field — because the parser does not know the label, or
+because the value would not parse. `parse.fields.is_mapped()` decides that, and
+both the page and the prompt call it, which is what keeps them from drifting
+apart as they once did.
+
+**Worked out** is `karpm/derived.py`: km per year, age, months of HU left, days
+on the market, the total price cut, distance from `home_plz`. None of it needs
+another request, and each is closer to what a person actually judges than the
+fields it comes from. Every one may be None, meaning "cannot say" — and is left
+off rather than shown as a zero, which would read as a fact.
+
+### The block inside the description
+
+An ad cross-posted from mobile.de carries a spec sheet in its description text:
+owner count, final drive, colour, an equipment list. `parse/syndicated.py` lifts
+that into attributes and leaves the seller's own words behind.
+
+The risk is eating a description that was never a block. A seller listing
+"Reifen: neu / Kette: neu / Bremsen: neu" has written three label lines, and
+cutting those out would lose exactly what is worth scoring. So a run of label
+lines is not enough on its own: something only mobile.de writes has to be there
+too — its attribution footer, the `Ausstattung` heading, or one of its own
+labels.
+
+Where the block and the page disagree, the page wins, since it is structured at
+the source — except when the block is more specific. "Erstzulassung: 2004"
+against "8/2004" is eight months vaguer, and that feeds straight into the bike's
+age; "Art: Motorräder" is true of every ad in a motorcycle search, where the
+block's "Enduro/Reiseenduro" says something.
 
 ## Going stale without changing
 

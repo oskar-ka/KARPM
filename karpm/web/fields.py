@@ -63,6 +63,10 @@ SECTIONS = (
     Section("", "general", "", (
         Field("db_path", "text",
               "One SQLite file: listings, their history, images and scores.", wide=True),
+        Field("home_plz", "text", "Your postcode. How far away a listing is gets "
+                                  "worked out from this; blank leaves every distance "
+                                  "unknown rather than guessed.",
+              optional=True, placeholder="22765"),
     )),
 
     Section("scrape", "scrape", (

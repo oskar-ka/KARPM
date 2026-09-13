@@ -32,19 +32,13 @@
   <span class="muted">on the next scrape and the next scoring run. Scoring costs credits.</span>
 </p>
 
+{# 1. What the ad says, and what the model made of it. #}
 <div class="cols">
   <div class="panel">
     <h2>{{ '{:,}'.format(row.price_eur).replace(',', '.') if row.price_eur else 'no price' }} €
       {% if row.price_kind == 'vb' %}<small>VB</small>{% endif %}</h2>
     <dl class="kv">
-      {% for label, value in [('mileage', row.km), ('first registration', row.first_reg_date),
-                              ('power', row.hp), ('displacement', row.ccm),
-                              ('HU until', row.inspection_until), ('owners', row.owners),
-                              ('seller', row.seller_type), ('location', row.location),
-                              ('posted', row.posted_at), ('first seen', row.first_seen_at),
-                              ('last seen', row.last_seen_at)] %}
-        {% if value %}<dt>{{ label }}</dt><dd>{{ value }}</dd>{% endif %}
-      {% endfor %}
+      {% for label, value in facts %}<dt>{{ label }}</dt><dd>{{ value }}</dd>{% endfor %}
     </dl>
   </div>
 
@@ -67,6 +61,7 @@
   </div>
 </div>
 
+{# 2. The photos. #}
 {% if images %}
 <div class="panel">
   <h2>{{ images | length }} photo(s)</h2>
@@ -81,23 +76,77 @@
 </div>
 {% endif %}
 
+{# 3. Nothing here was read off the page: it is worked out from what was. #}
+<div class="panel">
+  <h2>worked out</h2>
+  <dl class="kv derived">
+    {% if derived.km_per_year %}
+      <dt>km per year</dt>
+      <dd>{{ '{:,}'.format(derived.km_per_year).replace(',', '.') }}
+        {% if derived.km_per_year < 1500 %}<span class="tag warn">little used - standing
+          wears a bike too</span>{% endif %}</dd>
+    {% endif %}
+    {% if derived.age_years %}<dt>age</dt><dd>{{ derived.age_years }} years</dd>{% endif %}
+    {% if derived.hu_months_left is not none %}
+      <dt>HU remaining</dt>
+      <dd>{% if derived.hu_months_left < 0 %}<span class="bad-text">expired
+            {{ -derived.hu_months_left }} month(s) ago</span>
+          {% else %}{{ derived.hu_months_left }} month(s){% endif %}</dd>
+    {% endif %}
+    {% if derived.distance_km is not none %}
+      <dt>distance</dt><dd>≈ {{ derived.distance_km }} km from home</dd>
+    {% endif %}
+    {% if derived.days_on_market is not none %}
+      <dt>on the market</dt><dd>{{ derived.days_on_market }} day(s)</dd>
+    {% endif %}
+    {% if derived.price_drop %}
+      <dt>price cut</dt>
+      <dd>{{ derived.price_drop[0] }} € ({{ derived.price_drop[1] }}%) since it went up</dd>
+    {% endif %}
+    <dt>photos</dt><dd>{{ derived.photo_count }}</dd>
+    {% if derived.equipment %}
+      <dt>equipment</dt><dd>{{ derived.equipment | join(', ') }}</dd>
+    {% endif %}
+  </dl>
+  <p class="note">Worked out from the stored fields, not read off the page.
+    Anything that cannot be worked out is left off rather than shown as zero.</p>
+</div>
+
 <div class="panel">
   <h2>description</h2>
   <pre class="description">{{ row.description }}</pre>
 </div>
 
+{# 4. Everything else: the rest of the typed fields, then whatever the page
+      said that the parser does not understand yet. #}
 <div class="cols">
   <div class="panel">
-    <h2>attributes</h2>
-    <dl class="kv">{% for k, v in attributes.items() %}<dt>{{ k }}</dt><dd>{{ v }}</dd>{% endfor %}</dl>
+    <h2>everything else</h2>
+    {% set known, unmapped = rest %}
+    <dl class="kv">
+      {% for label, value in known %}<dt>{{ label }}</dt><dd>{{ value }}</dd>{% endfor %}
+    </dl>
+    {% if unmapped %}
+      <h3>not understood</h3>
+      <p class="note">On the page, but with no field of their own yet - which is
+        how a new Kleinanzeigen attribute gets noticed.</p>
+      <dl class="kv">
+        {% for label, value in unmapped %}<dt>{{ label }}</dt><dd>{{ value }}</dd>{% endfor %}
+      </dl>
+    {% endif %}
+    {% if row.parse_warnings and row.parse_warnings != '[]' %}
+      <h3>parse warnings</h3>
+      <p class="warn-text">{{ row.parse_warnings | fromjson | join(', ') }}</p>
+    {% endif %}
   </div>
+
   <div class="panel">
     <h2>history</h2>
     <table class="dense">
       {% for h in history %}
       <tr><td>{{ h.observed_at[:16] }}</td><td>{{ h.event }}</td>
         <td>{% if h.prev_price_eur %}{{ h.prev_price_eur }} → {{ h.price_eur }}{% endif %}</td></tr>
-      {% endfor %}
+      {% else %}<tr><td colspan="3" class="muted">nothing recorded yet</td></tr>{% endfor %}
     </table>
   </div>
 </div>

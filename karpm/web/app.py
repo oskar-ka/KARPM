@@ -12,7 +12,8 @@ from flask import (Flask, abort, flash, redirect, render_template, request,
                    send_file, url_for)
 
 from . import fields, tomledit
-from .. import db
+from .. import db, derived
+from ..parse import fields as parse_fields
 from ..config import Config, load_config
 
 log = logging.getLogger(__name__)
@@ -105,9 +106,12 @@ def create_app(config_path: str = "config.toml") -> Flask:
             scores = conn.execute(
                 "SELECT * FROM scores WHERE listing_id = ? ORDER BY scored_at DESC",
                 (listing_id,)).fetchall()
-            return render_template("listing.html", row=row, images=images,
-                                   history=history, scores=scores,
-                                   attributes=json.loads(row["attributes_json"] or "{}"))
+            return render_template(
+                "listing.html", row=row, images=images, history=history,
+                scores=scores, facts=_headline_facts(row),
+                derived=derived.summarise(conn, row, conf().home_plz),
+                changes=derived.price_history(conn, listing_id),
+                rest=_other_facts(row))
         finally:
             conn.close()
 
@@ -442,6 +446,83 @@ def _coerce(spec, raw: str):
 def _backup(path: Path) -> None:
     if path.exists():
         shutil.copy2(path, path.with_suffix(path.suffix + ".bak"))
+
+
+# What a person looks at first: what it is, how hard it has been used, and
+# whether it is roadworthy. Everything else is true but not what you read an ad
+# for, and goes below the photos.
+HEADLINE_FACTS = (
+    ("mileage", "km", "{:,} km"),
+    ("first registration", "first_reg_date", None),
+    ("power", "hp", "{} PS"),
+    ("displacement", "ccm", "{} ccm"),
+    ("HU until", "inspection_until", None),
+    ("previous owners", "owners", None),
+    ("condition", "condition", None),
+    ("type", "bike_type", None),
+    ("final drive", "drive_type", None),
+)
+
+OTHER_FACTS = (
+    ("make", "make", None),
+    ("model", "model", None),
+    ("model year", "model_year", None),
+    ("colour", "color", None),
+    ("fuel", "fuel_type", None),
+    ("transmission", "transmission", None),
+    ("service history", "full_service_hist", None),
+    ("damaged", "damaged", None),
+    ("plate", "plate", None),
+    ("season", "plate_season", None),
+    ("seller", "seller_type", None),
+    ("seller name", "seller_name", None),
+    ("location", "location", None),
+    ("postcode", "postcode", None),
+    ("posted", "posted_at", None),
+    ("views", "view_count", None),
+    ("first seen", "first_seen_at", None),
+    ("last seen", "last_seen_at", None),
+    ("search", "search_name", None),
+)
+
+
+def _format(row, column, template):
+    value = row[column] if column in row.keys() else None
+    if value is None or value == "":
+        return None
+    if template:
+        return template.format(value).replace(",", ".")
+    return value
+
+
+def _pairs(row, spec):
+    return [(label, _format(row, column, template))
+            for label, column, template in spec
+            if _format(row, column, template) is not None]
+
+
+def _headline_facts(row) -> list:
+    return _pairs(row, HEADLINE_FACTS)
+
+
+def _other_facts(row) -> list:
+    """Everything else typed, plus whatever the page said that we never mapped.
+
+    That second part is the point of keeping the raw attributes at all: a label
+    appearing here is one the parser does not understand yet.
+    """
+    known = _pairs(row, OTHER_FACTS)
+    raw = json.loads(row["attributes_json"] or "{}")
+    columns = set(row.keys())
+    unused = []
+    for label, value in raw.items():
+        column = parse_fields.mapped_column(label)
+        # Not understood at all, or understood but unusable - "HU: Neu" is a
+        # real answer that is not a date, and dropping it from the page would
+        # lose the only thing the ad said about the TUEV.
+        if column is None or (column in columns and row[column] in (None, "")):
+            unused.append((label, value))
+    return known, unused
 
 
 def _search_row(search) -> dict:

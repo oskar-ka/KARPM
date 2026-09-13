@@ -60,7 +60,11 @@ def test_the_ads_own_fields_still_parse(parsed):
     assert parsed["ccm"] == 1200
     assert parsed["first_reg_year"] == 2004
     assert parsed["description"]
-    assert parsed["parse_warnings"] == []
+    # This ad says "HU: Neu", which is true and is not a date. It must be
+    # reported rather than dropped: it is the only thing the ad says about the
+    # TUEV, and the page shows anything that did not make it into a field.
+    assert parsed["parse_warnings"] == ["unreadable:HU=Neu"]
+    assert parsed.get("inspection_until") is None
 
 
 def test_the_posting_date_comes_from_the_payload(parsed):
