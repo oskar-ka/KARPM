@@ -81,7 +81,7 @@ def enumerate_search(cfg, fetcher: Fetcher, search, save_pages=None) -> SearchPl
     url: str | None = search.url
     page = 0
 
-    while url and (search.max_pages is None or page < search.max_pages):
+    while url:
         log.info("[%s] search page %s%s", search.name, page + 1,
                  f"/{plan.page_count}" if plan.page_count else "")
         try:
@@ -139,18 +139,14 @@ def enumerate_search(cfg, fetcher: Fetcher, search, save_pages=None) -> SearchPl
         plan.pages_walked = page
         url = result["next_url"]
 
-        if search.max_listings is not None and len(plan.items) >= search.max_listings:
-            del plan.items[search.max_listings:]
+        if search.max_ads is not None and len(plan.items) >= search.max_ads:
+            del plan.items[search.max_ads:]
             plan.truncated = True
-            plan.stopped_because = f"reached the {search.max_listings}-ad limit"
+            plan.stopped_because = f"reached the {search.max_ads}-ad limit"
             break
         if url is None:
             plan.stopped_because = "the last page offered no next link"
             break
-
-    if url and search.max_pages is not None and page >= search.max_pages:
-        plan.truncated = True
-        plan.stopped_because = f"reached the {search.max_pages}-page limit"
 
     log.info("[%s] stopped after %s page(s): %s", search.name, plan.pages_walked,
              plan.stopped_because or "no more pages")

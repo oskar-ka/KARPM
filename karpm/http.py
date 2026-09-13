@@ -47,6 +47,15 @@ class Blocked(RuntimeError):
     """Raised when the site is clearly refusing us (403 / captcha wall)."""
 
 
+class PermanentError(RuntimeError):
+    """A 4xx the server will keep giving us. Retrying it only wastes time."""
+
+    def __init__(self, status: int, url: str) -> None:
+        super().__init__(f"HTTP {status} for {url}")
+        self.status = status
+        self.url = url
+
+
 class Page(NamedTuple):
     """A fetched page, plus where we actually landed after redirects."""
 
@@ -79,6 +88,11 @@ class Fetcher:
         if elapsed < delay:
             log.debug("waiting %.1fs before next request", delay - elapsed)
             time.sleep(delay - elapsed)
+
+    def _retry_delay(self, attempt: int) -> float:
+        """How long to wait before attempt N+1, from scrape.retry_delays_s."""
+        delays = self.cfg.retry_delays_s or [5]
+        return delays[min(attempt, len(delays) - 1)]
 
     def _dump(self, text: str, url: str) -> str:
         """Save a page we refused to trust, so it can actually be looked at."""
@@ -123,9 +137,10 @@ class Fetcher:
                 )
             except requests.RequestException as exc:
                 last_error = exc
-                log.warning("request failed (%s/%s) %s: %s",
-                            attempt + 1, self.cfg.max_retries + 1, url, exc)
-                time.sleep(2 ** attempt * 5)
+                wait = self._retry_delay(attempt)
+                log.warning("request failed (%s/%s) %s: %s; retrying in %ss",
+                            attempt + 1, self.cfg.max_retries + 1, url, exc, wait)
+                time.sleep(wait)
                 continue
 
             if resp.status_code == 200:
@@ -162,8 +177,14 @@ class Fetcher:
             if resp.status_code == 404:
                 raise FileNotFoundError(f"404 for {url}")
 
+            # A 4xx is the server saying the request itself is wrong, and it
+            # will say so again. 408 and 429 are the exceptions: those mean
+            # "not now" rather than "not ever".
+            if 400 <= resp.status_code < 500 and resp.status_code not in (408, 429):
+                raise PermanentError(resp.status_code, url)
+
             last_error = RuntimeError(f"HTTP {resp.status_code} for {url}")
-            wait = 2 ** attempt * 5
+            wait = self._retry_delay(attempt)
             log.warning("HTTP %s for %s; retrying in %ss (%s/%s)",
                         resp.status_code, url, wait, attempt + 1, self.cfg.max_retries + 1)
             time.sleep(wait)

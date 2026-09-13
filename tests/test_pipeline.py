@@ -69,7 +69,7 @@ class FakeFetcher:
 @pytest.fixture
 def conf(tmp_path):
     cfg = Config(db_path=str(tmp_path / "test.db"))
-    cfg.searches = [SearchConfig(name="mt07", url=SEARCH_URL, max_pages=2)]
+    cfg.searches = [SearchConfig(name="mt07", url=SEARCH_URL, )]
     cfg.images.dir = str(tmp_path / "images")
     cfg.scoring.enabled = False
     cfg.email.enabled = False
@@ -338,7 +338,7 @@ def test_a_truncated_run_never_reconciles_delistings(conf, conn):
     """It did not see the whole search, so absence proves nothing."""
     pipeline.run_scrape(conf, conn, FakeFetcher())
 
-    conf.searches[0].max_listings = 1
+    conf.searches[0].max_ads = 1
     fetcher = _drop_from_results(FakeFetcher(gone={"2847698888"}))
     counts = pipeline.run_scrape(conf, conn, fetcher)
 
@@ -355,7 +355,7 @@ def test_a_404_on_a_later_search_page_ends_pagination_instead_of_the_run(conf, c
                 raise FileNotFoundError(f"404 for {url}")
             return super().fetch(url, referer=referer, binary=binary)
 
-    conf.searches[0].max_pages = 5
+    conf.searches[0].max_ads = None
     plan = pipeline.enumerate_search(conf, VanishingPage2(), conf.searches[0])
     assert plan.pages_walked == 1
     assert len(plan.items) == 2
@@ -380,7 +380,7 @@ def test_page_one_stays_the_authority_on_page_count(conf, conn):
             return page._replace(content=page.content.replace(
                 "1 - 25 von 143", "126 - 143 von 143"))
 
-    conf.searches[0].max_pages = 5
+    conf.searches[0].max_ads = None
     plan = pipeline.enumerate_search(conf, LastPageSummary(), conf.searches[0])
     assert plan.total_results == 143
     assert plan.page_count is None, "a partial page cannot imply a page count"

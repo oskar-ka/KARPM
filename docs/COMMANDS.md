@@ -33,8 +33,13 @@ commands stay slow.
 
 | | Between pages | Between images |
 |---|---|---|
-| Production (`[scrape]`) | `min_delay_s`–`max_delay_s`, default 4–9 s | `image_*`, default 0.4–1.2 s |
-| Testing (`fast_*`) | default 0.5–1.5 s | default 0.1–0.3 s |
+| Production (`[scrape]`) | `min_delay_s`–`max_delay_s`, default 4–9 s | `image_min_delay_s`–`image_max_delay_s`, default 0.4–1.2 s |
+| Testing (`[trial]`) | same keys, default 0.5–1.5 s | same keys, default 0.1–0.3 s |
+
+Retries are configured too: `scrape.retry_delays_s` (default `[5, 10, 20, 40]`)
+is how long to wait before each further attempt at a request worth retrying.
+Permanent failures — a 400 or a 404 — are never retried, since the server will
+only say the same thing again.
 
 **`trial`, `probe` and `raw` use the testing pace by default**; `scrape`, `run`,
 `score`, `digest`, `daemon` and `images` use the production pace. Forcing a

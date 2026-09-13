@@ -12,7 +12,7 @@ from tests.test_pipeline import FakeFetcher, SEARCH_URL
 @pytest.fixture
 def populated(tmp_path):
     conf = Config(db_path=str(tmp_path / "test.db"))
-    conf.searches = [SearchConfig(name="mt07", url=SEARCH_URL, max_pages=2)]
+    conf.searches = [SearchConfig(name="mt07", url=SEARCH_URL, )]
     conf.images.dir = str(tmp_path / "images")
     conf.scoring.enabled = False
     conf.email.enabled = False

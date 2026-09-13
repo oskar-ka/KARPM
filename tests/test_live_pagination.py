@@ -99,8 +99,7 @@ def test_image_counts_are_read_from_the_thumbnails():
 @pytest.fixture
 def conf():
     cfg = Config()
-    cfg.searches = [SearchConfig(name="bmw", url=FIRST, max_pages=None,
-                                 make="BMW", model="R 1200 GS")]
+    cfg.searches = [SearchConfig(name="bmw", url=FIRST, make="BMW", model="R 1200 GS")]
     return cfg
 
 
@@ -138,11 +137,14 @@ def test_page_one_stays_the_authority_on_page_size(conf):
     assert plan.page_count == 12
 
 
-def test_max_pages_marks_the_run_truncated(conf):
-    conf.searches[0].max_pages = 2
+def test_an_ad_limit_marks_the_run_truncated(conf):
+    """There is no page limit any more: how many ads to take decides how many
+    pages get walked."""
+    conf.searches[0].max_ads = 4
     plan = pipeline.enumerate_search(conf, PaginatedFetcher(), conf.searches[0])
-    assert plan.pages_walked == 2
+    assert len(plan.items) == 4
     assert plan.truncated is True
+    assert "4-ad limit" in plan.stopped_because
 
 
 # --- pagination controls that are not links -----------------------------------

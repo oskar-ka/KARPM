@@ -13,6 +13,7 @@ from collections import Counter
 from pathlib import Path
 
 from . import db
+from .http import PermanentError
 
 log = logging.getLogger(__name__)
 
@@ -49,7 +50,7 @@ def candidate_urls(url: str, preferred: str | None = None) -> list[str]:
     return candidates
 
 
-def download_pending(conn, fetcher, cfg, limit: int = 500,
+def download_pending(conn, fetcher, cfg, limit: int | None = None,
                      delay_range: tuple[float, float] | None = None) -> int:
     """Fetch every image row that has no local file yet. Returns count saved."""
     if not cfg.enabled:
@@ -61,6 +62,8 @@ def download_pending(conn, fetcher, cfg, limit: int = 500,
 
     fallbacks: Counter[str] = Counter()
     preferred: str | None = None
+    failures: Counter[str] = Counter()
+    abandoned: set[str] = set()
     rows = db.pending_images(conn, limit=limit)
     if rows:
         pace = delay_range or (1.0, 1.0)
@@ -69,11 +72,23 @@ def download_pending(conn, fetcher, cfg, limit: int = 500,
     per_listing: dict[str, int] = {}
     for row in rows:
         listing_id = row["listing_id"]
+        if listing_id in abandoned:
+            continue
         per_listing[listing_id] = per_listing.get(listing_id, 0) + 1
         if cfg.max_per_listing is not None and per_listing[listing_id] > cfg.max_per_listing:
             continue
         data, used = _download(fetcher, row, delay_range, preferred)
         if data is None:
+            # An ad with broken photos has all of them broken. Trying every one
+            # costs a handful of requests each and returns nothing.
+            failures[listing_id] += 1
+            if failures[listing_id] >= cfg.give_up_after_failures:
+                abandoned.add(listing_id)
+                remaining = sum(1 for r in rows if r["listing_id"] == listing_id) \
+                    - per_listing[listing_id]
+                log.warning("giving up on this ad's photos after %s failures, skipping %s "
+                            "more\n    ad: %s", failures[listing_id], max(remaining, 0),
+                            row["listing_url"] if "listing_url" in row.keys() else listing_id)
             continue
         if used != row["url"]:
             rule = used.partition("rule=")[2]
@@ -90,6 +105,7 @@ def download_pending(conn, fetcher, cfg, limit: int = 500,
         target = root / listing_id / f"{row['position']:02d}_{digest[:12]}{suffix}"
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(data)
+        _write_backlink(target.parent, row)
 
         db.record_image_download(conn, row["id"], str(target), digest, len(data))
         saved += 1
@@ -107,6 +123,27 @@ def download_pending(conn, fetcher, cfg, limit: int = 500,
     return saved
 
 
+def _write_backlink(folder: Path, row) -> None:
+    """Leave a note in the image folder saying which ad these photos belong to.
+
+    A folder of JPEGs named after an id is otherwise a dead end; this makes the
+    link readable without opening the database.
+    """
+    marker = folder / "ad.txt"
+    if marker.exists():
+        return
+    keys = row.keys()
+    lines = [f"listing_id: {row['listing_id']}"]
+    if "listing_title" in keys and row["listing_title"]:
+        lines.append(f"title:      {row['listing_title']}")
+    if "listing_url" in keys and row["listing_url"]:
+        lines.append(f"url:        {row['listing_url']}")
+    try:
+        marker.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    except OSError as exc:
+        log.debug("could not write %s: %s", marker, exc)
+
+
 def _download(fetcher, row, delay_range, preferred=None) -> tuple[bytes | None, str | None]:
     """Fetch one photo, trying the other renditions if the linked one is gone."""
     listing = row["listing_url"] if "listing_url" in row.keys() else row["listing_id"]
@@ -115,8 +152,8 @@ def _download(fetcher, row, delay_range, preferred=None) -> tuple[bytes | None, 
     for url in tried:
         try:
             return fetcher.get(url, binary=True, delay_range=delay_range), url
-        except FileNotFoundError:
-            continue                                   # this rendition is missing
+        except (FileNotFoundError, PermanentError):
+            continue            # this rendition is missing or refused outright
         except Exception as exc:                       # one bad image is not fatal
             log.warning("image download failed for %s\n    photo: %s\n    error: %s",
                         listing, url, exc)

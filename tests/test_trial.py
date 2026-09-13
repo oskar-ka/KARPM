@@ -66,7 +66,7 @@ def conn(conf):
 
 
 def search(**kwargs):
-    defaults = dict(name="trial", url=SEARCH_URL, max_pages=1, max_listings=2,
+    defaults = dict(name="trial", url=SEARCH_URL, max_ads=2,
                     make="BMW", model="R 1200 GS")
     return SearchConfig(**{**defaults, **kwargs})
 
@@ -88,7 +88,7 @@ def test_trial_parses_real_pages_and_reports_success(conf, conn):
 
 
 def test_limit_caps_the_run(conf, conn):
-    report = trial.run_trial(conf, conn, search(max_listings=1), RealPageFetcher())
+    report = trial.run_trial(conf, conn, search(max_ads=1), RealPageFetcher())
     assert report.counts["seen"] == 1
     assert report.counts["capped"] is True
     assert len(report.rows) == 1
@@ -97,7 +97,7 @@ def test_limit_caps_the_run(conf, conn):
 def test_capped_run_never_marks_anything_delisted(conf, conn):
     """It only looked at part of the search, so absence proves nothing."""
     trial.run_trial(conf, conn, search(), RealPageFetcher())
-    trial.run_trial(conf, conn, search(max_listings=1), RealPageFetcher())
+    trial.run_trial(conf, conn, search(max_ads=1), RealPageFetcher())
 
     delisted = conn.execute("SELECT COUNT(*) n FROM listings WHERE is_active = 0").fetchone()["n"]
     assert delisted == 0
@@ -299,3 +299,97 @@ def test_preferred_rendition_is_tried_first():
     assert got[0] == "https://img.example/x?rule=$_59.JPG"
     assert "https://img.example/x?rule=$_59.AUTO" in got
     assert len(got) == len(set(got))
+
+
+# --- broken ads must not cost a fortune ----------------------------------------
+
+def test_a_permanent_error_is_not_retried(conf, conn):
+    """A 400 is the server saying the request is wrong; it will say so again.
+    Retrying it four times with backoff cost 75 seconds per photo."""
+    import time
+
+    from karpm.config import ScrapeConfig
+    from karpm.http import Fetcher, PermanentError
+
+    class AlwaysBadRequest:
+        calls = 0
+
+        def get(self, url, headers=None, timeout=None, allow_redirects=True):
+            AlwaysBadRequest.calls += 1
+            class R:
+                status_code = 400
+                headers: dict = {}
+                url = "u"
+                content = b""
+                encoding = None
+            return R()
+
+    fetcher = Fetcher(ScrapeConfig(min_delay_s=0, max_delay_s=0,
+                                   retry_delays_s=[30, 30, 30, 30]))
+    fetcher.session = AlwaysBadRequest()
+    started = time.monotonic()
+    with pytest.raises(PermanentError):
+        fetcher.get("https://img.example/broken", binary=True)
+    assert time.monotonic() - started < 1, "a permanent error must not sleep"
+    assert AlwaysBadRequest.calls == 1, "and must not be retried"
+
+
+def test_an_ad_with_broken_photos_is_abandoned_early(conf, conn, caplog):
+    """All twenty photos of a broken ad are broken; grinding through them
+    costs five requests each and returns nothing."""
+    import logging
+
+    class EveryPhotoBroken(RealPageFetcher):
+        def __init__(self):
+            super().__init__()
+            self.image_requests = []
+
+        def get(self, url, referer=None, binary=False, delay_range=None):
+            if binary:
+                self.image_requests.append(url)
+                from karpm.http import PermanentError
+                raise PermanentError(400, url)
+            return super().get(url, referer=referer, binary=binary)
+
+    conf.images.give_up_after_failures = 3
+    fetcher = EveryPhotoBroken()
+    with caplog.at_level(logging.WARNING):
+        report = trial.run_trial(conf, conn, search(), fetcher)
+
+    # 12 photos on the first ad, 8 on the second; each abandoned after 3
+    assert report.image_stats["downloaded"] == 0
+    attempts_per_photo = len(candidate_urls_for_a_photo())
+    assert len(fetcher.image_requests) <= 6 * attempts_per_photo, \
+        f"kept trying: {len(fetcher.image_requests)} requests"
+    assert "giving up on this ad's photos" in caplog.text
+
+
+def candidate_urls_for_a_photo():
+    from karpm.images import candidate_urls
+    return candidate_urls("https://img.kleinanzeigen.de/x/abc?rule=$_59.AUTO")
+
+
+def test_every_pending_image_is_downloaded_not_just_the_first_500(conf, conn):
+    """The 500 default was invisible and silently truncated big runs."""
+    from karpm import db as dbmod
+    pipeline_rows = 0
+    trial.run_trial(conf, conn, search(), RealPageFetcher())
+    # queue more images than the old default allowed
+    for n in range(600):
+        dbmod.add_image(conn, "3422210980", 100 + n, f"https://img.example/{n}.jpg")
+        pipeline_rows += 1
+    conn.commit()
+    assert len(dbmod.pending_images(conn)) == 600, "no implicit cap on the query"
+    assert len(dbmod.pending_images(conn, limit=10)) == 10
+
+
+def test_image_folders_carry_a_note_naming_their_ad(conf, conn):
+    report = trial.run_trial(conf, conn, search(), RealPageFetcher())
+    assert report.image_stats["downloaded"] > 0
+
+    folder = Path(conf.images.dir) / "3422210980"
+    note = folder / "ad.txt"
+    assert note.exists(), "an image folder should say which ad it belongs to"
+    text = note.read_text(encoding="utf-8")
+    assert "3422210980" in text
+    assert "kleinanzeigen.de/s-anzeige/" in text

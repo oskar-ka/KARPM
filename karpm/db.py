@@ -229,7 +229,7 @@ def add_image(conn: sqlite3.Connection, listing_id: str, position: int, url: str
     )
 
 
-def pending_images(conn: sqlite3.Connection, limit: int = 500) -> list[sqlite3.Row]:
+def pending_images(conn: sqlite3.Connection, limit: int | None = None) -> list[sqlite3.Row]:
     """Images with no local file yet, each carrying its ad's URL.
 
     The ad URL rides along so a failed download can name the listing it belongs
@@ -239,7 +239,7 @@ def pending_images(conn: sqlite3.Connection, limit: int = 500) -> list[sqlite3.R
         "SELECT i.*, l.url AS listing_url, l.title AS listing_title "
         "FROM images i LEFT JOIN listings l ON l.id = i.listing_id "
         "WHERE i.local_path IS NULL ORDER BY i.listing_id, i.position LIMIT ?",
-        (limit,),
+        (-1 if limit is None else limit,),      # SQLite reads -1 as no limit
     ).fetchall()
 
 

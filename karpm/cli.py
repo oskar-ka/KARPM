@@ -32,9 +32,9 @@ def _resolve_pace(args) -> bool:
 
 
 def _apply_pace(conf, args):
-    """Swap in the testing delays when this invocation calls for them."""
+    """Swap in the [trial] delays when this invocation calls for them."""
     fast = _resolve_pace(args)
-    conf.scrape = conf.scrape.at_pace(fast)
+    conf.scrape = conf.scrape.at_pace(conf.trial if fast else None)
     if fast and args.command not in FAST_BY_DEFAULT:
         log = logging.getLogger(__name__)
         log.warning("running %s at the testing pace (%.1f-%.1fs between pages) - fine for a "
@@ -295,15 +295,14 @@ def cmd_trial(args) -> int:
         conf.images.max_per_listing = None
 
     if args.url:
-        search = SearchConfig(name="trial", url=args.url, max_pages=None, max_listings=limit)
+        search = SearchConfig(name="trial", url=args.url, max_ads=limit)
     else:
         try:
             configured = _search_by_name(conf, args.search, args.config)
         except SearchNotFound as exc:
             print(exc, file=sys.stderr)
             return 2
-        search = SearchConfig(**{**vars(configured),
-                                 "max_pages": None, "max_listings": limit})
+        search = SearchConfig(**{**vars(configured), "max_ads": limit})
 
     # --make/--model override whatever the search carries; passing them with
     # --search used to be accepted and then quietly ignored.

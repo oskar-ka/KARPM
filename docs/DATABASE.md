@@ -168,7 +168,11 @@ format: the gallery links `$_59.AUTO`, while the page's own JSON-LD links
 before giving up, and remembers which one worked so a CDN that has dropped a
 rendition does not cost a wasted request on every photo. A photo with no working
 rendition leaves its row with a NULL `local_path`, and the failure names the ad
-it belongs to.
+it belongs to. After `images.give_up_after_failures` photos of one ad fail in a
+row the rest are skipped — an ad with broken images has all of them broken.
+
+Each folder also gets an `ad.txt` naming the listing id, title and URL, so a
+directory of JPEGs is not a dead end without the database.
 
 ## Querying it
 

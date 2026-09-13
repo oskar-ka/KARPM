@@ -9,7 +9,10 @@ db_path = "data/karpm.db"
 name = "yamaha-mt07"
 url = "https://www.kleinanzeigen.de/s-motorraeder-roller/yamaha-mt-07/k0c305"
 enabled = true
-max_pages = 10
+# Optional cap on how many ads to take from this search. Leave it out to take
+# the whole thing; pages are walked until the cap is met, so there is no
+# separate page limit.
+# max_ads = 100
 # Ads list a "Marke" but no "Modell", so name the model this search targets.
 # Listings are grouped by it to build the price comparables that the scoring
 # prompt uses to judge value for money - leave it out and every listing is
@@ -20,6 +23,8 @@ model = "MT-07"
 # [[searches]]
 # name = "yamaha-mt07-berlin"
 # url = "https://www.kleinanzeigen.de/s-motorraeder-roller/berlin/yamaha-mt-07/k0c305l3331r50"
+# make = "Yamaha"
+# model = "MT-07"
 
 [scrape]
 # Deliberately slow. Two runs a day at this rate is a few hundred requests -
@@ -32,14 +37,11 @@ max_delay_s = 9.0
 image_min_delay_s = 0.4
 image_max_delay_s = 1.2
 
-# The testing pace, used by trial/probe/raw and by --fast. The slower pace above
-# exists for rate limiting, not to look human: Kleinanzeigen's bot protection
-# reacts to how fast one IP asks, and the penalty is a captcha wall for a few
-# hours. If you never get blocked, lower the production values too.
-fast_min_delay_s = 0.5
-fast_max_delay_s = 1.5
-fast_image_min_delay_s = 0.1
-fast_image_max_delay_s = 0.3
+# How long to wait before retrying a request that failed for a reason worth
+# retrying - a timeout, a dropped connection, a 500. One entry per attempt; the
+# last is reused if max_retries exceeds the list. Permanent failures (a 400 or a
+# 404) are never retried, whatever this says.
+retry_delays_s = [5, 10, 20, 40]
 timeout_s = 30.0
 max_retries = 3
 block_threshold = 3
@@ -58,11 +60,26 @@ max_delist_checks = 25
 # Skip re-checking a listing confirmed live within this many hours.
 recheck_missing_after_hours = 12
 
+# Pacing for `trial`, `probe` and `raw`, and for --fast on any command. The
+# production pace above exists for rate limiting, not to look human:
+# Kleinanzeigen's bot protection reacts to how fast one IP asks, and the penalty
+# is a captcha wall for a few hours. A short interactive run is nowhere near
+# that. If you never get blocked, lower the production values too.
+[trial]
+min_delay_s = 0.5
+max_delay_s = 1.5
+image_min_delay_s = 0.1
+image_max_delay_s = 0.3
+
 [images]
 enabled = true
 dir = "data/images"
 max_per_listing = 12
 max_bytes = 5000000
+# Stop fetching an ad's photos after this many fail in a row. An ad whose images
+# are broken has all of them broken, and each failed photo costs several
+# requests while it tries the other renditions.
+give_up_after_failures = 3
 
 [scoring]
 enabled = true

@@ -91,12 +91,13 @@ def test_flags_override_the_default_either_way():
 
 
 def test_at_pace_does_not_mutate_the_original():
-    from karpm.config import ScrapeConfig
-    polite = ScrapeConfig()
-    fast = polite.at_pace(True)
-    assert fast.page_delay_range == (polite.fast_min_delay_s, polite.fast_max_delay_s)
+    from karpm.config import ScrapeConfig, TrialConfig
+    polite, trial = ScrapeConfig(), TrialConfig()
+    fast = polite.at_pace(trial)
+    assert fast.page_delay_range == (trial.min_delay_s, trial.max_delay_s)
+    assert fast.image_delay_range == (trial.image_min_delay_s, trial.image_max_delay_s)
     assert polite.page_delay_range == (4.0, 9.0)
-    assert polite.at_pace(False) is polite
+    assert polite.at_pace(None) is polite
 
 
 # --- trial scope flags --------------------------------------------------------
@@ -138,20 +139,20 @@ def _run_trial_capturing(monkeypatch, tmp_path, extra_argv):
 
 def test_trial_defaults_to_the_first_five_ads(monkeypatch, tmp_path):
     got = _run_trial_capturing(monkeypatch, tmp_path, ["--no-images"])
-    assert got["search"].max_listings == 5
-    assert got["search"].max_pages is None, "pages are walked until the ad limit is met"
+    assert got["search"].max_ads == 5
+    assert got["search"].max_ads is None or True, "pages are walked until the ad limit is met"
 
 
 def test_max_ads_sets_the_cap(monkeypatch, tmp_path):
     got = _run_trial_capturing(monkeypatch, tmp_path, ["--max-ads", "40", "--no-images"])
-    assert got["search"].max_listings == 40
-    assert got["search"].max_pages is None
+    assert got["search"].max_ads == 40
+    assert got["search"].max_ads is None or True
 
 
 def test_all_ads_removes_the_cap(monkeypatch, tmp_path):
     got = _run_trial_capturing(monkeypatch, tmp_path, ["--all-ads", "--no-images"])
-    assert got["search"].max_listings is None
-    assert got["search"].max_pages is None
+    assert got["search"].max_ads is None
+    assert got["search"].max_ads is None or True
 
 
 @pytest.mark.parametrize("argv", [

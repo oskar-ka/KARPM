@@ -33,17 +33,15 @@ class SearchConfig:
     name: str
     url: str
     enabled: bool = True
-    # None means every page, until the site stops offering a next one.
-    max_pages: int | None = 10
+    # Stop after this many ads; None takes the whole search. Pages are walked
+    # until this is met, so there is no separate page limit.
+    max_ads: int | None = None
     # Kleinanzeigen motorcycle ads carry a "Marke" but no "Modell" attribute, so
     # the model cannot be parsed off the page. Since one search URL targets one
     # model anyway, declare it here: it is what groups listings into the price
     # comparables the scoring prompt relies on.
     make: str | None = None
     model: str | None = None
-    # Stop after this many listings. Only used by `karpm trial`; a real run
-    # takes the whole search.
-    max_listings: int | None = None
 
 
 @dataclass
@@ -58,14 +56,11 @@ class ScrapeConfig:
     # search queries makes them ~90% of a run's waiting for no benefit.
     image_min_delay_s: float = 0.4
     image_max_delay_s: float = 1.2
-    # The testing pace, used by `trial`/`probe`/`raw` and by --fast. The point
-    # of the slower pace is rate limiting, not looking human: Kleinanzeigen's
-    # bot protection reacts to how fast one IP asks, and the penalty is a
-    # captcha wall for a few hours. These values are still far short of a burst.
-    fast_min_delay_s: float = 0.5
-    fast_max_delay_s: float = 1.5
-    fast_image_min_delay_s: float = 0.1
-    fast_image_max_delay_s: float = 0.3
+    # How long to wait before retrying a request that failed for a reason worth
+    # retrying. One entry per attempt; the last is reused if there are more
+    # attempts than entries. Permanent failures (a 400 or a 404) are not
+    # retried at all, whatever this says.
+    retry_delays_s: list[float] = field(default_factory=lambda: [5, 10, 20, 40])
     timeout_s: float = 30.0
     max_retries: int = 3
     user_agent: str = (
@@ -88,16 +83,16 @@ class ScrapeConfig:
     def page_delay_range(self) -> tuple[float, float]:
         return (self.min_delay_s, self.max_delay_s)
 
-    def at_pace(self, fast: bool) -> "ScrapeConfig":
-        """A copy at the testing pace, or this one unchanged."""
-        if not fast:
+    def at_pace(self, trial: "TrialConfig | None") -> "ScrapeConfig":
+        """A copy paced for a trial run, or this one unchanged."""
+        if trial is None:
             return self
         return replace(
             self,
-            min_delay_s=self.fast_min_delay_s,
-            max_delay_s=self.fast_max_delay_s,
-            image_min_delay_s=self.fast_image_min_delay_s,
-            image_max_delay_s=self.fast_image_max_delay_s,
+            min_delay_s=trial.min_delay_s,
+            max_delay_s=trial.max_delay_s,
+            image_min_delay_s=trial.image_min_delay_s,
+            image_max_delay_s=trial.image_max_delay_s,
         )
     # Re-fetch the detail page of a known listing at most this often (hours).
     refresh_after_hours: int = 24
@@ -115,11 +110,31 @@ class ScrapeConfig:
 
 
 @dataclass
+class TrialConfig:
+    """Pacing for `trial`, `probe` and `raw`, and for --fast.
+
+    The production pace exists for rate limiting, not to look human:
+    Kleinanzeigen's bot protection reacts to how fast one IP asks, and the
+    penalty is a captcha wall for a few hours. A short interactive run is far
+    below that, which is why it gets its own numbers.
+    """
+
+    min_delay_s: float = 0.5
+    max_delay_s: float = 1.5
+    image_min_delay_s: float = 0.1
+    image_max_delay_s: float = 0.3
+
+
+@dataclass
 class ImageConfig:
     enabled: bool = True
     dir: str = "data/images"
     # None means every photo the ad has.
     max_per_listing: int | None = 12
+    # Give up on a listing's remaining photos after this many in a row fail.
+    # An ad whose images are broken has all of them broken, and grinding
+    # through twenty of those costs far more than it can ever return.
+    give_up_after_failures: int = 3
     max_bytes: int = 5_000_000
 
 
@@ -168,6 +183,7 @@ class Config:
     db_path: str = "data/karpm.db"
     searches: list[SearchConfig] = field(default_factory=list)
     scrape: ScrapeConfig = field(default_factory=ScrapeConfig)
+    trial: TrialConfig = field(default_factory=TrialConfig)
     images: ImageConfig = field(default_factory=ImageConfig)
     scoring: ScoringConfig = field(default_factory=ScoringConfig)
     email: EmailConfig = field(default_factory=EmailConfig)
@@ -202,6 +218,7 @@ def load_config(path: Path | str = DEFAULT_CONFIG_PATH) -> Config:
         db_path=raw.get("db_path", Config.db_path),
         searches=[_subset(SearchConfig, s) for s in raw.get("searches", [])],
         scrape=_subset(ScrapeConfig, raw.get("scrape", {})),
+        trial=_subset(TrialConfig, raw.get("trial", {})),
         images=_subset(ImageConfig, raw.get("images", {})),
         scoring=_subset(ScoringConfig, raw.get("scoring", {})),
         email=_subset(EmailConfig, raw.get("email", {})),
