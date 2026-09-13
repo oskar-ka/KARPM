@@ -61,6 +61,10 @@ class ScrapeConfig:
     accept_language: str = "de-DE,de;q=0.9,en;q=0.5"
     # Stop the run entirely after this many consecutive blocked responses.
     block_threshold: int = 3
+    # Base backoff after a suspected block; grows with the square of the count.
+    block_backoff_s: int = 60
+    # Pages we refused to trust are written here so they can be inspected.
+    dump_dir: str = "data/blocked"
     # Re-fetch the detail page of a known listing at most this often (hours).
     refresh_after_hours: int = 24
     # A listing missing from the search results has its own page checked before

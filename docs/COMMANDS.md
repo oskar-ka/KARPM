@@ -28,6 +28,7 @@ from a `.env` file in the working directory: `ANTHROPIC_API_KEY` for scoring and
 | Command | Touches the network? | Costs money? | Sends email? |
 |---|---|---|---|
 | [`init`](#init) | no | no | no |
+| [`raw`](#raw) | yes (one request) | no | no |
 | [`trial`](#trial) | yes (scrape) | no | no |
 | [`probe`](#probe) | optional | no | no |
 | [`scrape`](#scrape) | yes | no | no |
@@ -87,6 +88,32 @@ download failed; **1** otherwise, so it works as a cron healthcheck.
 The report separates two kinds of gap: **MISSING** means a field should have
 parsed and did not — a bug worth reporting; *not stated* means the site never
 provides it for these ads (motorcycle listings have no `owners` or `condition`).
+
+---
+
+## `raw`
+
+One request, no retries, no backoff — exactly what the server returned. `probe`
+and `trial` go through the polite fetcher, which retries and sleeps on anything
+suspicious; when *that* is the thing misbehaving, this bypasses it.
+
+```bash
+karpm raw "https://www.kleinanzeigen.de/s-motorraeder-roller/..."
+karpm raw "<url>" --save page.html
+```
+
+| Argument / flag | Default | Meaning |
+|---|---|---|
+| `url` | required | URL to fetch. |
+| `--save PATH` | — | Write the body here instead of printing a 600-character preview. |
+| `--no-redirects` | off | Do not follow redirects — shows the first response as-is. |
+
+Reports status, elapsed time, final URL and redirect chain, content type, size,
+the header encoding, **which block markers matched** (the reason the fetcher
+would back off), the page title, and how many `data-adid` attributes are
+present — a healthy search page has one per ad.
+
+Use this first whenever a run stalls or returns nothing.
 
 ---
 
@@ -273,6 +300,7 @@ karpm top --min-score 4 --limit 20
 |---|---|
 | `0` | Success. For `digest`, that includes "there was nothing new to send". |
 | `1` | `trial`: a required field failed to parse, or an image download failed. `score-one`: listing id not in the database. `digest`: the send failed. `score`: an instant alert failed to send. |
+| `1` | `raw`: the request itself failed. |
 | `2` | Bad arguments — for example `trial --search` naming a search that is not in the config. |
 
 `daemon` only exits on a signal, and exits `0`; per-run failures are logged and

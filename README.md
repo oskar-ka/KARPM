@@ -140,7 +140,11 @@ karpm daemon          # run continuously on the configured schedule
 ```
 
 Other commands: `trial`, `scrape`, `score`, `images`, `stats`, `top`, `score-one`,
-`probe`.
+`probe`, `raw`.
+
+If a run stalls or comes back empty, `karpm raw "<url>"` makes one request with
+no retries or backoff and prints exactly what the server returned — status,
+redirects, size, and whether the body looks like a block page.
 
 `karpm score-one <id> --show-prompt` prints the exact prompt for a listing
 without calling the API — the fastest way to tune `preferences.md`.

@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import re
 import sys
 from pathlib import Path
 
@@ -115,6 +116,67 @@ def _page_kind(html: str, explicit: str, url: str | None) -> str:
     return "detail" if any(marker in html for marker in DETAIL_MARKERS) else "search"
 
 
+def cmd_raw(args) -> int:
+    """One request, no retries, no backoff - just what the server said.
+
+    `probe` and `trial` go through the polite fetcher, which retries and sleeps
+    on anything suspicious. When that is the thing misbehaving, this bypasses it
+    entirely so the actual response is visible.
+    """
+    import time
+
+    import requests
+
+    from .http import BLOCK_MARKERS, decode
+
+    conf = load_config(args.config)
+    session = requests.Session()
+    session.headers.update({
+        "User-Agent": conf.scrape.user_agent,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": conf.scrape.accept_language,
+    })
+
+    print(f"GET {args.url}")
+    started = time.monotonic()
+    try:
+        resp = session.get(args.url, timeout=conf.scrape.timeout_s,
+                           allow_redirects=not args.no_redirects)
+    except requests.RequestException as exc:
+        print(f"\nrequest failed after {time.monotonic() - started:.1f}s: "
+              f"{type(exc).__name__}: {exc}", file=sys.stderr)
+        return 1
+
+    elapsed = time.monotonic() - started
+    text = decode(resp)
+    print(f"\n  status        {resp.status_code}")
+    print(f"  elapsed       {elapsed:.1f}s")
+    print(f"  final url     {resp.url}")
+    if resp.history:
+        print(f"  redirects     {' -> '.join(str(r.status_code) for r in resp.history)}")
+    print(f"  content-type  {resp.headers.get('Content-Type')}")
+    print(f"  bytes         {len(resp.content)}")
+    print(f"  encoding      header={resp.encoding!r} decoded as UTF-8-safe")
+
+    matched = [m for m in BLOCK_MARKERS if m in text[:4000].lower()]
+    print(f"  block markers {matched or 'none'}"
+          + ("   <-- this is why the fetcher backs off" if matched else ""))
+
+    title = re.search(r"<title[^>]*>(.*?)</title>", text, re.S | re.I)
+    print(f"  title         {title.group(1).strip()[:90] if title else '(none)'}")
+
+    ads = len(re.findall(r'data-adid="', text))
+    print(f"  data-adid     {ads} occurrence(s)")
+
+    if args.save:
+        Path(args.save).write_text(text, encoding="utf-8")
+        print(f"\n  saved to {args.save}")
+    else:
+        print("\n--- first 600 characters of the body ---")
+        print(text[:600])
+    return 0
+
+
 def cmd_probe(args) -> int:
     """Fetch one page and report what the parsers can extract from it.
 
@@ -207,6 +269,14 @@ def cmd_trial(args) -> int:
         report = trial.run_trial(conf, conn, search, download_images=not args.no_images)
     except Blocked as exc:
         print(f"\nBLOCKED: {exc}", file=sys.stderr)
+        print(f"Try `karpm raw \"{search.url}\"` to see the response directly.",
+              file=sys.stderr)
+        conn.close()
+        return 1
+    except Exception as exc:
+        print(f"\nthe trial could not complete: {type(exc).__name__}: {exc}", file=sys.stderr)
+        print(f"Try `karpm raw \"{search.url}\"` to see what the server returns.",
+              file=sys.stderr)
         conn.close()
         return 1
 
@@ -311,6 +381,13 @@ def main(argv: list[str] | None = None) -> int:
     p_digest = sub.add_parser("digest", help="send the digest email")
     p_digest.add_argument("--dry-run", action="store_true", help="list what would be sent")
     p_digest.set_defaults(func=cmd_digest)
+
+    p_raw = sub.add_parser(
+        "raw", help="one request, no retries or backoff - show exactly what the server returned")
+    p_raw.add_argument("url", help="URL to fetch")
+    p_raw.add_argument("--save", help="write the body here instead of printing a preview")
+    p_raw.add_argument("--no-redirects", action="store_true", help="do not follow redirects")
+    p_raw.set_defaults(func=cmd_raw)
 
     p_probe = sub.add_parser("probe", help="parse one live or saved page and dump the result")
     p_probe.add_argument("--url", help="page to fetch")

@@ -121,3 +121,47 @@ def test_explicit_header_charset_is_respected():
 def test_unknown_declared_charset_falls_back_instead_of_raising():
     body = '<html><head><meta charset="totally-not-a-charset"></head><body>ö</body></html>'
     assert decode(_response(body.encode("utf-8"), "text/html"))
+
+
+# --- the fetcher must never stall silently ------------------------------------
+
+def test_block_markers_are_reported_individually():
+    from karpm.http import _block_markers
+    assert _block_markers("<html>Bitte lösen Sie die Sicherheitsabfrage</html>") == \
+        ["sicherheitsabfrage"]
+    assert _block_markers("<html>normal page</html>") == []
+
+
+def test_real_pages_are_not_mistaken_for_block_pages():
+    """A false positive here costs a 60s silent stall per attempt."""
+    from karpm.http import _block_markers
+    for name in ("live_search_astro.html", "live_detail_bmw_fixed.html",
+                 "live_detail_bmw_vb.html"):
+        html = (FIXTURE.parent / name).read_text(encoding="utf-8")
+        assert _block_markers(html) == [], f"{name} would be treated as a block page"
+
+
+def test_a_blocked_page_raises_Blocked_not_a_generic_error(tmp_path, monkeypatch):
+    """Retries exhausted on block pages must surface as Blocked, so callers can
+    stop cleanly rather than dying on an unhandled RuntimeError."""
+    from karpm.config import ScrapeConfig
+    from karpm.http import Blocked, Fetcher
+
+    cfg = ScrapeConfig(min_delay_s=0, max_delay_s=0, max_retries=1, block_threshold=99,
+                       block_backoff_s=0, dump_dir=str(tmp_path / "dumps"))
+    fetcher = Fetcher(cfg)
+
+    def blocked_response(*args, **kwargs):
+        return _response(b"<html><body>captcha</body></html>", "text/html")
+
+    monkeypatch.setattr(fetcher.session, "get", blocked_response)
+    monkeypatch.setattr("karpm.http.time.sleep", lambda _s: None)
+
+    with pytest.raises(Blocked) as excinfo:
+        fetcher.get("https://www.kleinanzeigen.de/s-motorraeder-roller/x")
+
+    assert "block page" in str(excinfo.value)
+    assert str(tmp_path / "dumps") in str(excinfo.value)
+    dumps = list((tmp_path / "dumps").glob("blocked_*.html"))
+    assert dumps, "the offending page must be saved for inspection"
+    assert "captcha" in dumps[0].read_text(encoding="utf-8")
