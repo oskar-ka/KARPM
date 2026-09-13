@@ -222,7 +222,14 @@ def score_pending(conn, cfg) -> list[dict]:
     if not cfg.enabled:
         return []
 
-    scorer = Scorer(cfg, load_preferences(cfg.preferences_file))
+    preferences = load_preferences(cfg.preferences_file)
+    # Nothing about a listing changes when you rewrite what you are looking for,
+    # so a changed preferences file has to mark the verdicts itself.
+    marked = db.note_preferences(conn, preferences)
+    if marked:
+        log.info("preferences.md changed - %s listing(s) marked for re-scoring", marked)
+
+    scorer = Scorer(cfg, preferences)
     rows = db.unscored_listings(conn, cfg.rescore_on_change, cfg.prompt_version, cfg.max_per_run)
     written = []
 
@@ -238,7 +245,8 @@ def score_pending(conn, cfg) -> list[dict]:
         db.add_score(conn, row["id"], score)
         conn.commit()
         written.append({**score, "listing_id": row["id"], "title": row["title"],
-                        "url": row["url"], "price_eur": row["price_eur"]})
+                        "url": row["url"], "price_eur": row["price_eur"],
+                        "ignored": bool(row["ignored"])})
         log.info("scored %s: overall=%s fit=%s value=%s", row["id"], score["overall"],
                  score["fit"], score["value"])
 

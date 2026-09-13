@@ -130,6 +130,30 @@ def create_app(config_path: str = "config.toml") -> Flask:
             abort(404)
         return send_file(path)
 
+    @app.post("/listing/<listing_id>/<action>")
+    def listing_action(listing_id: str, action: str):
+        conn = connect()
+        try:
+            if conn.execute("SELECT 1 FROM listings WHERE id = ?",
+                            (listing_id,)).fetchone() is None:
+                abort(404)
+            if action in ("ignore", "unignore"):
+                db.set_ignored(conn, listing_id, action == "ignore")
+                flash("ignored - it will not appear in any email" if action == "ignore"
+                      else "no longer ignored", "ok")
+            elif action == "refetch":
+                db.mark_for_refetch(conn, listing_id)
+                flash("marked - its page is read again on the next scrape", "ok")
+            elif action == "rescore":
+                db.mark_for_rescore(conn, listing_id)
+                flash("marked - it is scored again on the next scoring run, "
+                      "which costs credits", "ok")
+            else:
+                abort(404)
+        finally:
+            conn.close()
+        return redirect(request.referrer or url_for("listing", listing_id=listing_id))
+
     # --- daemon control -------------------------------------------------
 
     @app.post("/control/<action>")
@@ -196,10 +220,21 @@ def create_app(config_path: str = "config.toml") -> Flask:
     @app.post("/preferences")
     def save_preferences():
         path = Path(conf().scoring.preferences_file)
+        text = request.form.get("text", "")
         _backup(path)
-        path.write_text(request.form.get("text", ""), encoding="utf-8")
-        flash("preferences saved - bump scoring.prompt_version to re-score "
-              "everything against them", "ok")
+        path.write_text(text, encoding="utf-8")
+        # Nothing about a listing changes when you rewrite what you want, so
+        # the verdicts have to be marked here rather than noticed later.
+        conn = connect()
+        try:
+            marked = db.note_preferences(conn, text)
+        finally:
+            conn.close()
+        if marked:
+            flash(f"preferences saved - {marked} listing(s) marked for re-scoring, "
+                  "which happens on the next scoring run and costs credits", "ok")
+        else:
+            flash("preferences saved - unchanged, so nothing was marked", "ok")
         return redirect(url_for("preferences"))
 
     @app.route("/config")
@@ -488,6 +523,7 @@ def _status(conn, conf) -> dict:
         "counts": counts,
         "runs": conn.execute("SELECT * FROM runs ORDER BY id DESC LIMIT 8").fetchall(),
         "commands": db.recent_commands(conn, 8),
+        "pending": db.pending_counts(conn),
         "searches": conn.execute("SELECT * FROM searches ORDER BY name").fetchall(),
         "conf": conf,
     }
@@ -508,12 +544,21 @@ def _filters_from(args) -> dict:
 
 def _where(filters) -> tuple[str, list]:
     clauses, params = [], []
-    if filters["state"] == "active":
-        clauses.append("is_active = 1")
-    elif filters["state"] == "delisted":
+    state = filters["state"]
+    if state == "active":
+        # Ignored listings are still listings; they are just never mailed. They
+        # stay out of the default view and have a filter of their own.
+        clauses.append("is_active = 1 AND ignored = 0")
+    elif state == "delisted":
         clauses.append("is_active = 0")
-    if filters["state"] == "unscored":
+    elif state == "unscored":
         clauses.append("overall IS NULL AND is_active = 1")
+    elif state == "ignored":
+        clauses.append("ignored = 1")
+    elif state == "needs_refetch":
+        clauses.append("needs_refetch = 1")
+    elif state == "needs_rescore":
+        clauses.append("needs_rescore = 1")
     if filters["q"]:
         clauses.append("(title LIKE ? OR description LIKE ? OR id = ?)")
         params += [f"%{filters['q']}%", f"%{filters['q']}%", filters["q"]]

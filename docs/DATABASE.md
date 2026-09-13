@@ -336,6 +336,41 @@ is just running any command — existing rows and their history are preserved.
 | 2 | `listings.delisted_reason`, `missing_since`, `missing_count`, `last_verified_at` — added with delisting verification. |
 | 3 | `commands` and `app_state` — the web UI's queue and the daemon's status, added with `karpm web`. |
 | 4 | No schema change. Descriptions stored as markup are rewritten as text, and their `content_hash` recomputed. |
+| 5 | `listings.parser_version`, `needs_refetch`, `needs_rescore`, `ignored` — the staleness flags. |
+
+## Going stale without changing
+
+A listing can stop being trustworthy without the ad itself moving. The parser
+changed and would now read the page differently; `preferences.md` changed, so
+the verdict was reached against something you no longer want; or you looked at a
+5/5 and decided it is not for you. None of that shows up as a price drop or an
+edit, so it is recorded on the row rather than left to be noticed.
+
+| Column | Set when | Cleared when |
+|---|---|---|
+| `parser_version` | Every save, to `db.PARSER_VERSION`. | — |
+| `needs_refetch` | `parser_version` is behind, or you ask on the listing page. | The page is read again. |
+| `needs_rescore` | `preferences.md` changes, `needs_refetch` is set, or you ask. | The listing is scored. |
+| `ignored` | You dismiss it in the web UI. | You take it back. |
+
+Two rules make these behave:
+
+- **A listing waiting to be re-fetched is not scored.** Its stored text is known
+  to be out of date, so a verdict on it buys an answer about text that is about
+  to be replaced. `needs_refetch` holds it back until the scrape catches up.
+- **`ignored` suppresses email, not scoring.** The listing keeps a current
+  verdict — you can still open it and see what the model thought — it simply
+  never reaches the digest or an instant alert.
+
+`preferences.md` is watched by hashing it into `app_state.preferences_hash`.
+The first sight of a file is not a change, or every new database would re-score
+itself on day one. After that, any edit marks every active listing, which is
+what makes the next scoring run redo them — and it costs credits, so both the
+web UI and the log say how many were marked.
+
+Marking everything is deliberately blunt. There is no way to tell which verdicts
+a preferences edit would actually change without asking the model, which is the
+expensive thing you were trying to decide about.
 
 ### Data migrations
 

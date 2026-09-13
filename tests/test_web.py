@@ -670,3 +670,90 @@ def test_the_searches_banner_counts_from_one(client):
     """"url-0" is how the form is wired; it is not what to show a person."""
     resp = client.post("/searches/save", data=search_form(client, {"url-0": ""}))
     assert "search 1: url" in resp.get_data(as_text=True)
+
+
+# --- the flags, from the page --------------------------------------------
+
+def test_ignoring_a_listing_from_its_page(client, app):
+    _, config_path, _ = app
+    assert client.post("/listing/2847612345/ignore").status_code == 302
+    with opened(config_path) as conn:
+        assert conn.execute("SELECT ignored FROM listings WHERE id = '2847612345'"
+                            ).fetchone()["ignored"] == 1
+    assert b"not appear in any email" in client.get("/listing/2847612345").get_data()
+
+
+def test_un_ignoring_a_listing(client, app):
+    _, config_path, _ = app
+    client.post("/listing/2847612345/ignore")
+    client.post("/listing/2847612345/unignore")
+    with opened(config_path) as conn:
+        assert conn.execute("SELECT ignored FROM listings WHERE id = '2847612345'"
+                            ).fetchone()["ignored"] == 0
+
+
+@pytest.mark.parametrize("action, column", [("refetch", "needs_refetch"),
+                                            ("rescore", "needs_rescore")])
+def test_queueing_a_listing_by_hand(client, app, action, column):
+    _, config_path, _ = app
+    assert client.post(f"/listing/2847612345/{action}").status_code == 302
+    with opened(config_path) as conn:
+        assert conn.execute(f"SELECT {column} FROM listings WHERE id = '2847612345'"
+                            ).fetchone()[column] == 1
+
+
+def test_an_unknown_action_is_a_404(client):
+    assert client.post("/listing/2847612345/delete").status_code == 404
+
+
+def test_an_action_on_a_listing_that_does_not_exist_is_a_404(client):
+    assert client.post("/listing/9999999999/ignore").status_code == 404
+
+
+def test_ignored_listings_leave_the_default_view(client, app):
+    assert b"2847612345" in client.get("/listings").get_data()
+    client.post("/listing/2847612345/ignore")
+    assert b"2847612345" not in client.get("/listings").get_data()
+    # but they are still findable
+    assert b"2847612345" in client.get("/listings?state=ignored").get_data()
+
+
+@pytest.mark.parametrize("state", ["ignored", "needs_refetch", "needs_rescore"])
+def test_each_flag_has_a_filter(client, app, state):
+    _, config_path, _ = app
+    assert client.get(f"/listings?state={state}").status_code == 200
+    action = {"ignored": "ignore", "needs_refetch": "refetch",
+              "needs_rescore": "rescore"}[state]
+    client.post(f"/listing/2847612345/{action}")
+    assert b"2847612345" in client.get(f"/listings?state={state}").get_data()
+
+
+def test_the_dashboard_counts_what_is_queued(client, app):
+    assert b"to re-fetch" not in client.get("/status-fragment").get_data()
+    client.post("/listing/2847612345/refetch")
+    body = client.get("/status-fragment").get_data(as_text=True)
+    assert "1 to re-fetch" in body
+    assert "1 to re-score" in body
+
+
+def test_editing_preferences_marks_the_listings_and_says_so(client, app):
+    _, config_path, tmp_path = app
+    # The first save only records the file; it is not a change to it.
+    client.post("/preferences", data={"text": "# Want\n\nA GS.\n"})
+    resp = client.post("/preferences", data={"text": "# Want\n\nA GS under 6000.\n"},
+                       follow_redirects=True)
+    body = resp.get_data(as_text=True)
+    assert "marked for re-scoring" in body
+    assert "costs credits" in body
+    with opened(config_path) as conn:
+        assert conn.execute("SELECT SUM(needs_rescore) n FROM listings").fetchone()["n"] == 2
+
+
+def test_saving_the_same_preferences_marks_nothing(client, app):
+    _, config_path, _ = app
+    client.post("/preferences", data={"text": "# Want\n\nA GS.\n"})
+    resp = client.post("/preferences", data={"text": "# Want\n\nA GS.\n"},
+                       follow_redirects=True)
+    assert b"nothing was marked" in resp.get_data()
+    with opened(config_path) as conn:
+        assert conn.execute("SELECT SUM(needs_rescore) n FROM listings").fetchone()["n"] == 0

@@ -9,7 +9,9 @@
   <input name="q" value="{{ filters.q }}" placeholder="title, description or id">
   <select name="state">
     {% for value, label in [('active','active'),('unscored','unscored'),
-                            ('delisted','delisted'),('all','all')] %}
+                            ('delisted','delisted'),('ignored','ignored'),
+                            ('needs_refetch','needs re-fetch'),
+                            ('needs_rescore','needs re-score'),('all','all')] %}
       <option value="{{ value }}" {{ 'selected' if filters.state == value }}>{{ label }}</option>
     {% endfor %}
   </select>
@@ -43,7 +45,10 @@
       <td>{{ row.seller_type or '' }}</td>
       <td class="truncate">{{ row.location or '' }}</td>
       <td>{{ row.first_seen_at[:10] }}</td>
-      <td><a href="{{ url_for('listing', listing_id=row.id) }}">{{ row.title }}</a></td>
+      <td><a href="{{ url_for('listing', listing_id=row.id) }}">{{ row.title }}</a>
+        {% if row.ignored %}<span class="tag">ignored</span>{% endif %}
+        {% if row.needs_refetch %}<span class="tag warn">re-fetch</span>{% endif %}
+        {% if row.needs_rescore %}<span class="tag warn">re-score</span>{% endif %}</td>
     </tr>
   {% else %}
     <tr><td colspan="11">nothing matches</td></tr>

@@ -117,3 +117,7 @@ button.link:hover { color: var(--bad); filter: none; }
   .field { grid-template-columns: 1fr; gap: 4px; }
   .field .note { max-width: none; }
 }
+
+.row-actions { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
+               margin: 0 0 8px; }
+.row-actions .muted { font-size: 12.5px; }

@@ -373,6 +373,12 @@ or after whatever it is currently doing finishes.
 | `re-score everything` | The same, after deleting every existing score. Asks first, and costs a great deal more. |
 | `pause schedule` | Stops the timed slots firing. Queued commands still run, so the buttons keep working. |
 
+Each listing's own page has three more: **ignore** keeps a listing out of every
+email without deleting it — for one that scored well but is not for you —
+**read the page again** queues a re-fetch, and **score it again** queues a new
+verdict. The dashboard shows how many of each are outstanding, and the listings
+filter has a view for each.
+
 ### Editing the settings
 
 **Config** is a field per setting, grouped by the table it lives in, with the

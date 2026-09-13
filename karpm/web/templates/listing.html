@@ -7,6 +7,29 @@
   · id {{ row.id }}
   {% if not row.is_active %}<span class="tag warn">delisted {{ row.delisted_at[:10] }}
     ({{ row.delisted_reason or 'unknown' }})</span>{% endif %}
+  {% if row.ignored %}<span class="tag">ignored</span>{% endif %}
+  {% if row.needs_refetch %}<span class="tag warn">re-fetch queued</span>{% endif %}
+  {% if row.needs_rescore %}<span class="tag warn">re-score queued</span>{% endif %}
+</p>
+
+<p class="row-actions">
+  {% if row.ignored %}
+    <form method="post" action="{{ url_for('listing_action', listing_id=row.id, action='unignore') }}"
+          class="inline"><button>stop ignoring</button></form>
+    <span class="muted">ignored listings never appear in an email.</span>
+  {% else %}
+    <form method="post" action="{{ url_for('listing_action', listing_id=row.id, action='ignore') }}"
+          class="inline"><button>ignore</button></form>
+    <span class="muted">for a listing that scored well but is not for you - it
+      stays in the database and out of your inbox.</span>
+  {% endif %}
+</p>
+<p class="row-actions">
+  <form method="post" action="{{ url_for('listing_action', listing_id=row.id, action='refetch') }}"
+        class="inline"><button>read the page again</button></form>
+  <form method="post" action="{{ url_for('listing_action', listing_id=row.id, action='rescore') }}"
+        class="inline"><button>score it again</button></form>
+  <span class="muted">on the next scrape and the next scoring run. Scoring costs credits.</span>
 </p>
 
 <div class="cols">

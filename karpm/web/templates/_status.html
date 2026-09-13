@@ -14,5 +14,14 @@
     <dt>next digest</dt><dd>{{ next_digest or '-' }}</dd>
     <dt>listings</dt><dd>{{ counts.total or 0 }} ({{ counts.active or 0 }} active,
       {{ counts.unscored or 0 }} unscored)</dd>
+    {% if pending.refetch or pending.rescore or pending.ignored %}
+      <dt>queued</dt><dd>
+        {% if pending.refetch %}<a href="{{ url_for('listings', state='needs_refetch') }}">{{
+          pending.refetch }} to re-fetch</a>{% endif %}
+        {% if pending.rescore %}<a href="{{ url_for('listings', state='needs_rescore') }}">{{
+          pending.rescore }} to re-score</a>{% endif %}
+        {% if pending.ignored %}<a href="{{ url_for('listings', state='ignored') }}">{{
+          pending.ignored }} ignored</a>{% endif %}</dd>
+    {% endif %}
   </dl>
 </div>

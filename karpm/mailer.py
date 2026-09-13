@@ -192,7 +192,7 @@ def digest_candidates(conn, cfg) -> list:
         """
         SELECT lc.* FROM listing_current lc
         LEFT JOIN notifications n ON n.listing_id = lc.id AND n.kind = 'digest'
-        WHERE lc.is_active = 1 AND lc.overall IS NOT NULL
+        WHERE lc.is_active = 1 AND lc.ignored = 0 AND lc.overall IS NOT NULL
           AND lc.overall >= ? AND n.id IS NULL
         ORDER BY lc.overall DESC, lc.value DESC, lc.first_seen_at DESC
         LIMIT ?

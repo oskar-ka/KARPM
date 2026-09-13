@@ -11,6 +11,11 @@ unattended on a Raspberry Pi.
   same commit that changes the behaviour.
 - **`docs/DATABASE.md`** covers the schema and the save path — update it when
   the schema changes.
+- **Bump `db.PARSER_VERSION` when a parser change means stored rows would now
+  come out differently.** Every listing written by an older version is then
+  re-fetched on the next scrape and scored again. Skip it only when the change
+  can be applied to the stored rows in place (as `repair_descriptions` does),
+  which is cheaper — and say which you did.
 - Push directly to `main`; do not open pull requests unless asked.
 - Python 3.10 is the floor (Raspberry Pi OS / Ubuntu 22.04 ship it).
 
@@ -36,6 +41,11 @@ unattended on a Raspberry Pi.
   wrong about the cause, because those pages were the old stack and the failing
   ones were not. `karpm trial` saves short-gallery pages into `scrape.dump_dir`
   and `karpm probe` prints a per-source photo count for exactly this.
+- **Some things go stale without the ad changing.** A parser fix, an edit to
+  `preferences.md`, a listing you have dismissed: none of those show up as a
+  price drop or an edit, so each is recorded on the row (`needs_refetch`,
+  `needs_rescore`, `ignored`) rather than left to be noticed. Anything that
+  invalidates stored data belongs in one of those flags.
 - **Silence is the enemy.** A scraper returning rows of NULLs, or a digest that
   could not send, must not look like success. Check `karpm trial` still passes.
 

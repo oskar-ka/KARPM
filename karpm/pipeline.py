@@ -20,6 +20,8 @@ def _needs_refresh(row, refresh_after_hours: int) -> bool:
     """Re-fetch a known ad's detail page only occasionally - the search page
     already tells us it still exists, and the price shown there catches most
     changes."""
+    if row["needs_refetch"]:
+        return True                     # the parser changed, or you asked
     try:
         last = datetime.fromisoformat(row["last_seen_at"])
     except (TypeError, ValueError):
@@ -482,6 +484,8 @@ def run_scoring_and_alerts(conf, conn) -> dict:
     alert_failures = 0
 
     for score in scored:
+        if score.get("ignored"):
+            continue                    # you have dismissed it; no interruption
         if not mailer.qualifies_for_instant(conf.email, score, score.get("price_eur")):
             continue
         if db.already_notified(conn, score["listing_id"], "instant"):

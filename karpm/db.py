@@ -13,7 +13,12 @@ from typing import Any, Iterable
 
 log = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
+
+# Bump when a parser change means a stored row would now come out differently
+# and cannot be corrected in place. Every listing written by an older version is
+# then marked for re-fetching. See "Keeping stored rows honest" in CLAUDE.md.
+PARSER_VERSION = 1
 
 
 def utcnow() -> str:
@@ -44,6 +49,10 @@ MIGRATIONS = {
         ("missing_since", "TEXT"),
         ("missing_count", "INTEGER NOT NULL DEFAULT 0"),
         ("last_verified_at", "TEXT"),
+        ("parser_version", "INTEGER NOT NULL DEFAULT 0"),
+        ("needs_refetch", "INTEGER NOT NULL DEFAULT 0"),
+        ("needs_rescore", "INTEGER NOT NULL DEFAULT 0"),
+        ("ignored", "INTEGER NOT NULL DEFAULT 0"),
     ],
 }
 
@@ -66,6 +75,19 @@ def init_db(conn: sqlite3.Connection) -> None:
                 "cleaned the stored markup out of %s description(s). Their scores "
                 "were made from the old text, so they will be scored again on the "
                 "next scoring run - which costs API credits.", repaired)
+
+    if was:
+        # A database that predates the flags has rows at parser_version 0. They
+        # were parsed by whatever the code was then, which is exactly what this
+        # is for - but marking every row on a first upgrade would re-fetch the
+        # lot, so an existing database starts level with the current version.
+        if was < 5:
+            conn.execute("UPDATE listings SET parser_version = ?", (PARSER_VERSION,))
+            conn.commit()
+        outdated = mark_outdated_parses(conn)
+        if outdated:
+            log.warning("%s listing(s) were parsed by an older version of the "
+                        "scraper and will be read again on the next scrape.", outdated)
 
 
 def repair_descriptions(conn: sqlite3.Connection) -> int:
@@ -99,6 +121,80 @@ def repair_descriptions(conn: sqlite3.Connection) -> int:
         fixed += 1
     conn.commit()
     return fixed
+
+
+# --- staleness flags --------------------------------------------------------
+#
+# Three things can make a stored row wrong in a way the ad itself never reveals:
+# the parser changed, preferences.md changed, or you decided a listing is not
+# for you. None of those show up as a price drop or an edit, so each is recorded
+# against the listing rather than left to be noticed.
+
+
+def mark_outdated_parses(conn: sqlite3.Connection) -> int:
+    """Flag listings written by an older parser. Returns how many."""
+    cur = conn.execute(
+        "UPDATE listings SET needs_refetch = 1, needs_rescore = 1 "
+        "WHERE is_active = 1 AND parser_version < ? AND needs_refetch = 0",
+        (PARSER_VERSION,),
+    )
+    conn.commit()
+    return cur.rowcount
+
+
+def mark_for_refetch(conn: sqlite3.Connection, listing_id: str) -> None:
+    """Read this ad's page again on the next scrape, whatever its age."""
+    conn.execute(
+        "UPDATE listings SET needs_refetch = 1, needs_rescore = 1 WHERE id = ?",
+        (listing_id,))
+    conn.commit()
+
+
+def mark_for_rescore(conn: sqlite3.Connection, listing_id: str | None = None) -> int:
+    """Score this listing again - or every active listing, if none is named."""
+    if listing_id is None:
+        cur = conn.execute("UPDATE listings SET needs_rescore = 1 WHERE is_active = 1")
+    else:
+        cur = conn.execute("UPDATE listings SET needs_rescore = 1 WHERE id = ?",
+                           (listing_id,))
+    conn.commit()
+    return cur.rowcount
+
+
+def note_preferences(conn: sqlite3.Connection, text: str | None) -> int:
+    """Notice that preferences.md changed, and mark everything for re-scoring.
+
+    Nothing about a listing changes when you rewrite what you are looking for,
+    so without this the old verdicts would stand indefinitely - or wait for
+    someone to remember to bump scoring.prompt_version by hand.
+
+    Returns how many listings were marked; 0 when the file is unchanged.
+    """
+    digest = hashlib.sha256((text or "").encode("utf-8")).hexdigest()[:16]
+    if get_state(conn, "preferences_hash") == digest:
+        return 0
+    first_time = get_state(conn, "preferences_hash") is None
+    set_state(conn, "preferences_hash", digest)
+    if first_time:
+        # Recording the file for the first time is not a change to it.
+        return 0
+    return mark_for_rescore(conn)
+
+
+def set_ignored(conn: sqlite3.Connection, listing_id: str, ignored: bool = True) -> None:
+    """Dismiss a listing, or take it back. Ignored listings are never mailed."""
+    conn.execute("UPDATE listings SET ignored = ? WHERE id = ?",
+                 (1 if ignored else 0, listing_id))
+    conn.commit()
+
+
+def pending_counts(conn: sqlite3.Connection) -> dict:
+    """How much housekeeping is outstanding, for the dashboard."""
+    row = conn.execute(
+        "SELECT SUM(needs_refetch) refetch, SUM(needs_rescore) rescore, "
+        "SUM(ignored) ignored FROM listings WHERE is_active = 1").fetchone()
+    return {"refetch": row["refetch"] or 0, "rescore": row["rescore"] or 0,
+            "ignored": row["ignored"] or 0}
 
 
 def _migrate(conn: sqlite3.Connection) -> None:
@@ -154,11 +250,12 @@ def upsert_listing(conn: sqlite3.Connection, data: dict) -> str:
     values = {k: data.get(k) for k in LISTING_COLUMNS}
 
     if existing is None:
-        cols = LISTING_COLUMNS + ["first_seen_at", "last_seen_at", "is_active"]
+        cols = LISTING_COLUMNS + ["first_seen_at", "last_seen_at", "is_active",
+                                  "parser_version"]
         placeholders = ", ".join("?" for _ in cols)
         conn.execute(
             f"INSERT INTO listings ({', '.join(cols)}) VALUES ({placeholders})",
-            [values[c] for c in LISTING_COLUMNS] + [now, now, 1],
+            [values[c] for c in LISTING_COLUMNS] + [now, now, 1, PARSER_VERSION],
         )
         add_history(conn, data["id"], "created", price_eur=values["price_eur"])
         return "new"
@@ -181,10 +278,13 @@ def upsert_listing(conn: sqlite3.Connection, data: dict) -> str:
         outcome = "relisted"
 
     assignments = ", ".join(f"{c} = ?" for c in LISTING_COLUMNS if c != "id")
+    # The page has just been read with the current parser, so whatever was
+    # outdated about this row no longer is.
     conn.execute(
         f"UPDATE listings SET {assignments}, last_seen_at = ?, is_active = 1, "
-        "delisted_at = NULL WHERE id = ?",
-        [merged[c] for c in LISTING_COLUMNS if c != "id"] + [now, data["id"]],
+        "delisted_at = NULL, parser_version = ?, needs_refetch = 0 WHERE id = ?",
+        [merged[c] for c in LISTING_COLUMNS if c != "id"]
+        + [now, PARSER_VERSION, data["id"]],
     )
     return outcome
 
@@ -325,17 +425,20 @@ def unscored_listings(
     conn: sqlite3.Connection, rescore_on_change: bool, prompt_version: str, limit: int
 ) -> list[sqlite3.Row]:
     """Listings with no score, or whose content changed since the last score."""
-    clause = "s.id IS NULL" if not rescore_on_change else (
-        "s.id IS NULL OR s.content_hash IS NOT l.content_hash OR s.prompt_version IS NOT ?"
+    clause = "s.id IS NULL OR l.needs_rescore = 1" if not rescore_on_change else (
+        "s.id IS NULL OR l.needs_rescore = 1 "
+        "OR s.content_hash IS NOT l.content_hash OR s.prompt_version IS NOT ?"
     )
     params: list[Any] = [] if not rescore_on_change else [prompt_version]
+    # needs_refetch means the stored text is known to be out of date, so scoring
+    # it now would buy a verdict on text we are about to replace.
     return conn.execute(
         f"""
         SELECT l.* FROM listings l
         LEFT JOIN scores s ON s.id = (
             SELECT id FROM scores WHERE listing_id = l.id ORDER BY scored_at DESC LIMIT 1
         )
-        WHERE l.is_active = 1 AND ({clause})
+        WHERE l.is_active = 1 AND l.needs_refetch = 0 AND ({clause})
         ORDER BY l.first_seen_at DESC
         LIMIT ?
         """,
@@ -344,6 +447,7 @@ def unscored_listings(
 
 
 def add_score(conn: sqlite3.Connection, listing_id: str, score: dict) -> int:
+    conn.execute("UPDATE listings SET needs_rescore = 0 WHERE id = ?", (listing_id,))
     cur = conn.execute(
         """
         INSERT INTO scores (listing_id, scored_at, model, prompt_version, content_hash,

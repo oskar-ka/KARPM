@@ -56,13 +56,22 @@ CREATE TABLE IF NOT EXISTS listings (
 
     attributes_json   TEXT,                      -- every raw label/value pair we found
     parse_warnings    TEXT,                      -- fields the parser could not fill
-    content_hash      TEXT                       -- hash of title+description+price
+    content_hash      TEXT,                      -- hash of title+description+price
+
+    -- Housekeeping. A change to the parser or to preferences.md makes stored
+    -- rows out of date in a way nothing about the ad itself reveals, so it has
+    -- to be recorded rather than noticed. See docs/DATABASE.md.
+    parser_version    INTEGER NOT NULL DEFAULT 0, -- db.PARSER_VERSION that wrote this row
+    needs_refetch     INTEGER NOT NULL DEFAULT 0, -- the page should be read again
+    needs_rescore     INTEGER NOT NULL DEFAULT 0, -- the verdict should be made again
+    ignored           INTEGER NOT NULL DEFAULT 0  -- you have dismissed it; no email
 );
 
 CREATE INDEX IF NOT EXISTS idx_listings_active   ON listings(is_active);
 CREATE INDEX IF NOT EXISTS idx_listings_price    ON listings(price_eur);
 CREATE INDEX IF NOT EXISTS idx_listings_seen     ON listings(first_seen_at);
 CREATE INDEX IF NOT EXISTS idx_listings_model    ON listings(make, model);
+CREATE INDEX IF NOT EXISTS idx_listings_pending  ON listings(needs_refetch, needs_rescore);
 
 -- One row per observed change. Lets you reconstruct price history and
 -- time-on-market, which is the whole point of tracking over time.
