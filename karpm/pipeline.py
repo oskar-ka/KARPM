@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
+from pathlib import Path
 from datetime import datetime, timedelta, timezone
 
 from . import db, images, mailer, scoring
@@ -68,7 +69,7 @@ class SearchPlan:
         return total
 
 
-def enumerate_search(cfg, fetcher: Fetcher, search) -> SearchPlan:
+def enumerate_search(cfg, fetcher: Fetcher, search, save_pages=None) -> SearchPlan:
     """Phase one: walk the search pages and collect what is there.
 
     Nothing is fetched beyond the result pages themselves. Doing this first
@@ -94,6 +95,11 @@ def enumerate_search(cfg, fetcher: Fetcher, search) -> SearchPlan:
             log.info("[%s] page %s is gone (404) - treating it as the end",
                      search.name, page + 1)
             break
+        if save_pages is not None:
+            target = Path(save_pages) / f"page_{page + 1:02d}.html"
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(f"<!-- {url} -->\n{html}", encoding="utf-8")
+            log.info("[%s] saved %s", search.name, target)
         result = parse_search_page(html, base_url=url)
 
         if not result["items"]:
@@ -148,6 +154,13 @@ def enumerate_search(cfg, fetcher: Fetcher, search) -> SearchPlan:
 
     log.info("[%s] stopped after %s page(s): %s", search.name, plan.pages_walked,
              plan.stopped_because or "no more pages")
+    # The search says how many pages it has; stopping short of that without
+    # being told to is the symptom of a pagination control we cannot follow.
+    if (plan.page_count and plan.pages_walked < plan.page_count
+            and not plan.truncated):
+        log.warning("[%s] the search claims %s page(s) but the walk ended after %s. "
+                    "Re-run with --save-pages DIR and look at the last file saved.",
+                    search.name, plan.page_count, plan.pages_walked)
     return plan
 
 
@@ -190,14 +203,15 @@ def describe_plan(plan: SearchPlan, cfg) -> str:
     return "\n".join(lines)
 
 
-def scrape_search(conn, cfg, fetcher: Fetcher, search, mark_missing: bool = True) -> dict:
+def scrape_search(conn, cfg, fetcher: Fetcher, search, mark_missing: bool = True,
+                  save_pages=None) -> dict:
     """Walk one saved search: enumerate it, then fetch only what needs fetching.
 
     `mark_missing` reconciles listings that were not in the results. A run that
     stopped early never saw the whole search, so it must not draw conclusions
     from an ad's absence.
     """
-    plan = classify_plan(conn, cfg, enumerate_search(cfg, fetcher, search))
+    plan = classify_plan(conn, cfg, enumerate_search(cfg, fetcher, search, save_pages))
     log.info("[%s] plan:\n%s", search.name, describe_plan(plan, cfg))
 
     counts = {"seen": len(plan.items), "new": 0, "changed": 0, "pages": plan.pages_walked,

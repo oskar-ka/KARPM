@@ -229,8 +229,19 @@ NEXT_SELECTORS = (
     "a[rel=next]",
     'a[aria-label="Nächste"]',
     "a[aria-label^='Nächste']",
+    'a[title="Nächste"]',
     "a.pagination-next",
     ".pagination-next",
+)
+
+# Deeper into a result set the same control arrives as a <span> carrying the
+# target in data-url and marked aria-hidden, for JS to hydrate into a link. On
+# page 5 of a 12-page search that is the only form it takes, so a parser that
+# insists on an href concludes the search ended there and silently drops the
+# remaining pages.
+NEXT_DATA_SELECTORS = (
+    '[data-url][title="Nächste"]',
+    '[data-url][aria-label="Nächste"]',
 )
 
 
@@ -239,4 +250,8 @@ def _next_url(soup, base_url: str) -> str | None:
         node = soup.select_one(selector)
         if node and node.get("href"):
             return urljoin(base_url, node["href"])
+    for selector in NEXT_DATA_SELECTORS:
+        node = soup.select_one(selector)
+        if node and node.get("data-url"):
+            return urljoin(base_url, node["data-url"])
     return None

@@ -119,7 +119,8 @@ def _run_trial_capturing(monkeypatch, tmp_path, extra_argv):
         warnings = []
         ok = True
 
-    def fake_run_trial(conf, conn, search, fetcher=None, download_images=True):
+    def fake_run_trial(conf, conn, search, fetcher=None, download_images=True,
+                       save_pages=None):
         captured["search"] = search
         captured["max_per_listing"] = conf.images.max_per_listing
         captured["delays"] = conf.scrape.page_delay_range
@@ -147,22 +148,28 @@ def test_max_ads_sets_the_cap(monkeypatch, tmp_path):
     assert got["search"].max_pages is None
 
 
-def test_max_ads_accepts_the_underscore_spelling(monkeypatch, tmp_path):
-    got = _run_trial_capturing(monkeypatch, tmp_path, ["--max_ads", "7", "--no-images"])
-    assert got["search"].max_listings == 7
-
-
 def test_all_ads_removes_the_cap(monkeypatch, tmp_path):
-    for flag in ("--all-ads", "--all_ads"):
-        got = _run_trial_capturing(monkeypatch, tmp_path, [flag, "--no-images"])
-        assert got["search"].max_listings is None
-        assert got["search"].max_pages is None
+    got = _run_trial_capturing(monkeypatch, tmp_path, ["--all-ads", "--no-images"])
+    assert got["search"].max_listings is None
+    assert got["search"].max_pages is None
+
+
+@pytest.mark.parametrize("argv", [
+    ["trial", "--max_ads", "7"],
+    ["trial", "--all_ads"],
+    ["trial", "--all_images"],
+])
+def test_underscore_spellings_are_not_accepted(argv):
+    """One spelling only, to keep the surface small."""
+    from karpm.cli import build_parser
+    with pytest.raises(SystemExit) as excinfo:
+        build_parser().parse_args(argv)
+    assert excinfo.value.code == 2
 
 
 @pytest.mark.parametrize("argv", [
     ["trial", "--max-ads", "5", "--all-ads"],     # the value equals the default
     ["trial", "--max-ads", "7", "--all-ads"],
-    ["trial", "--max_ads", "7", "--all_ads"],
 ])
 def test_max_ads_and_all_ads_are_mutually_exclusive(argv):
     """Parsed through the parser directly: a regression here used to let the

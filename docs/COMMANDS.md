@@ -100,6 +100,7 @@ karpm trial --url "https://www.kleinanzeigen.de/s-motorraeder-roller/..." \
 | `--max-ads N` | `5` | Stop after N ads, walking as many pages as that needs. |
 | `--all-ads` | off | Every ad in the search, to the last page. |
 | `--all-images` | off | Every photo per ad. Without it, `images.max_per_listing` applies. |
+| `--save-pages DIR` | — | Write every search page walked into DIR, including the one that ends the walk. |
 | `--db PATH` | `data/trial.db` | Throwaway database. Wiped at the start of each run unless `--keep`. |
 | `--image-dir PATH` | `data/trial_images` | Where trial images are written. |
 | `--make NAME` | — | Make to record on each listing. Overrides the search's own value. |
@@ -116,11 +117,14 @@ parsed and did not — a bug worth reporting; *not stated* means the site never
 provides it for these ads (motorcycle listings have no `owners` or `condition`).
 
 There is no page flag: pages are walked until the ad limit is met, or until the
-search runs out of ads. Every spelling is accepted both ways round
-(`--max-ads` / `--max_ads`). `--max-ads` and `--all-ads` cannot be combined.
+search runs out of ads. `--max-ads` and `--all-ads` cannot be combined.
 
 When a walk ends, it says why — the ad limit, a page limit from the config, the
-last page offering no next link, or a page that returned nothing parseable.
+last page offering no next link, or a page that returned nothing parseable. If
+it ends before the page count the search itself reported, that is flagged as a
+warning, because it is the symptom of a pagination control the parser cannot
+follow. `--save-pages DIR` then captures every page walked, and the last file
+in it is the one to look at.
 
 **The search pages are read first, then the ads.** Walking the result pages
 costs a handful of requests and produces an exact plan before anything else is

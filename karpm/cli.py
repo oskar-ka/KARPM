@@ -339,7 +339,8 @@ def cmd_trial(args) -> int:
     print("  the search pages are read first, so the plan below is a count, not a guess.\n")
 
     try:
-        report = trial.run_trial(conf, conn, search, download_images=not args.no_images)
+        report = trial.run_trial(conf, conn, search, download_images=not args.no_images,
+                                 save_pages=args.save_pages)
     except Blocked as exc:
         print(f"\nBLOCKED: {exc}", file=sys.stderr)
         print(f"Try `karpm raw \"{search.url}\"` to see the response directly.",
@@ -504,12 +505,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_trial.add_argument("--search", default="trial",
                          help="name of a search from config.toml to try instead of --url")
     ads = p_trial.add_mutually_exclusive_group()
-    ads.add_argument("--max-ads", "--max_ads", type=int, default=None, dest="max_ads",
+    ads.add_argument("--max-ads", type=int, default=None, dest="max_ads",
                      help="stop after this many ads, walking as many pages as that "
                           "needs (default 5)")
-    ads.add_argument("--all-ads", "--all_ads", action="store_true", dest="all_ads",
+    ads.add_argument("--all-ads", action="store_true", dest="all_ads",
                      help="every ad in the search, to the last page")
-    p_trial.add_argument("--all-images", "--all_images", action="store_true", dest="all_images",
+    p_trial.add_argument("--all-images", action="store_true", dest="all_images",
                          help="every photo per ad; without it, images.max_per_listing applies")
     p_trial.add_argument("--db", default="data/trial.db", help="throwaway database path")
     p_trial.add_argument("--image-dir", default="data/trial_images",
@@ -519,6 +520,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_trial.add_argument("--no-images", action="store_true", help="skip image downloads")
     p_trial.add_argument("--keep", action="store_true",
                          help="append to the trial database instead of starting clean")
+    p_trial.add_argument("--save-pages", metavar="DIR",
+                         help="write every search page walked into DIR, including the one "
+                              "that ends the walk")
     p_trial.add_argument("--show-prompt", action="store_true",
                          help="also print the scoring prompt for the first listing")
     p_trial.set_defaults(func=cmd_trial)

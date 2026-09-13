@@ -49,11 +49,12 @@ class TrialReport:
 
 
 def run_trial(conf, conn, search: SearchConfig, fetcher: Fetcher | None = None,
-              download_images: bool = True) -> TrialReport:
+              download_images: bool = True, save_pages=None) -> TrialReport:
     fetcher = fetcher or Fetcher(conf.scrape)
 
     # A capped run has not looked at the whole search, so absence proves nothing.
-    counts = pipeline.scrape_search(conn, conf, fetcher, search, mark_missing=False)
+    counts = pipeline.scrape_search(conn, conf, fetcher, search, mark_missing=False,
+                                    save_pages=save_pages)
 
     saved = images.download_pending(
         conn, fetcher, conf.images, delay_range=conf.scrape.image_delay_range

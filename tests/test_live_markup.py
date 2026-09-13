@@ -86,8 +86,10 @@ def test_next_page_uses_the_next_arrow_not_a_numbered_link(result):
 
 
 def test_pagination_stops_on_the_last_page():
-    html = FIXTURE.read_text(encoding="utf-8").replace('aria-label="Nächste"', 'aria-label="x"')
-    assert parse_search_page(html)["next_url"] is None
+    """The real last page of a 12-page search carries no next control at all,
+    in any of its forms."""
+    last = (FIXTURE.parent / "live_search_plast.html").read_text(encoding="utf-8")
+    assert parse_search_page(last)["next_url"] is None
 
 
 # --- the encoding bug ---------------------------------------------------------
