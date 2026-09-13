@@ -55,7 +55,9 @@ def run_trial(conf, conn, search: SearchConfig, fetcher: Fetcher | None = None,
     # A capped run has not looked at the whole search, so absence proves nothing.
     counts = pipeline.scrape_search(conn, conf, fetcher, search, mark_missing=False)
 
-    saved = images.download_pending(conn, fetcher, conf.images) if download_images else 0
+    saved = images.download_pending(
+        conn, fetcher, conf.images, delay_range=conf.scrape.image_delay_range
+    ) if download_images else 0
 
     rows = _attach_image_counts(conn, conn.execute(
         "SELECT * FROM listings WHERE search_name = ? ORDER BY first_seen_at", (search.name,)

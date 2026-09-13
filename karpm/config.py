@@ -52,6 +52,11 @@ class ScrapeConfig:
     # browsing. Lower them at your own risk of getting blocked.
     min_delay_s: float = 4.0
     max_delay_s: float = 9.0
+    # Images come from a static CDN (img.kleinanzeigen.de), not the search
+    # backend, and a browser loads a whole gallery at once. Pacing them like
+    # search queries makes them ~90% of a run's waiting for no benefit.
+    image_min_delay_s: float = 0.4
+    image_max_delay_s: float = 1.2
     timeout_s: float = 30.0
     max_retries: int = 3
     user_agent: str = (
@@ -65,6 +70,10 @@ class ScrapeConfig:
     block_backoff_s: int = 60
     # Pages we refused to trust are written here so they can be inspected.
     dump_dir: str = "data/blocked"
+
+    @property
+    def image_delay_range(self) -> tuple[float, float]:
+        return (self.image_min_delay_s, self.image_max_delay_s)
     # Re-fetch the detail page of a known listing at most this often (hours).
     refresh_after_hours: int = 24
     # A listing missing from the search results has its own page checked before

@@ -72,8 +72,9 @@ class Fetcher:
         )
         self._last_request = 0.0
 
-    def _wait(self) -> None:
-        delay = random.uniform(self.cfg.min_delay_s, self.cfg.max_delay_s)
+    def _wait(self, delay_range: tuple[float, float] | None = None) -> None:
+        low, high = delay_range or (self.cfg.min_delay_s, self.cfg.max_delay_s)
+        delay = random.uniform(low, high)
         elapsed = time.monotonic() - self._last_request
         if elapsed < delay:
             log.debug("waiting %.1fs before next request", delay - elapsed)
@@ -90,12 +91,14 @@ class Fetcher:
         except OSError as exc:
             return f"(could not save: {exc})"
 
-    def get(self, url: str, *, referer: str | None = None, binary: bool = False):
+    def get(self, url: str, *, referer: str | None = None, binary: bool = False,
+            delay_range: tuple[float, float] | None = None):
         """Fetch a URL, returning text (or bytes). Raises on permanent failure."""
-        page = self.fetch(url, referer=referer, binary=binary)
+        page = self.fetch(url, referer=referer, binary=binary, delay_range=delay_range)
         return page.content
 
-    def fetch(self, url: str, *, referer: str | None = None, binary: bool = False) -> Page:
+    def fetch(self, url: str, *, referer: str | None = None, binary: bool = False,
+              delay_range: tuple[float, float] | None = None) -> Page:
         """Like get(), but also reports the URL we ended up at.
 
         Kleinanzeigen answers a removed ad by redirecting to the category page
@@ -107,7 +110,7 @@ class Fetcher:
         saw_block = False
 
         for attempt in range(self.cfg.max_retries + 1):
-            self._wait()
+            self._wait(delay_range)
             self._last_request = time.monotonic()
             try:
                 resp = self.session.get(

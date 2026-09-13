@@ -18,7 +18,8 @@ log = logging.getLogger(__name__)
 EXTENSIONS = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp"}
 
 
-def download_pending(conn, fetcher, cfg, limit: int = 500) -> int:
+def download_pending(conn, fetcher, cfg, limit: int = 500,
+                     delay_range: tuple[float, float] | None = None) -> int:
     """Fetch every image row that has no local file yet. Returns count saved."""
     if not cfg.enabled:
         return 0
@@ -28,6 +29,10 @@ def download_pending(conn, fetcher, cfg, limit: int = 500) -> int:
     saved = 0
 
     rows = db.pending_images(conn, limit=limit)
+    if rows:
+        pace = delay_range or (1.0, 1.0)
+        log.info("downloading %s image(s), roughly %.0fs",
+                 len(rows), len(rows) * sum(pace) / 2)
     per_listing: dict[str, int] = {}
     for row in rows:
         listing_id = row["listing_id"]
@@ -35,7 +40,7 @@ def download_pending(conn, fetcher, cfg, limit: int = 500) -> int:
         if per_listing[listing_id] > cfg.max_per_listing:
             continue
         try:
-            data = fetcher.get(row["url"], binary=True)
+            data = fetcher.get(row["url"], binary=True, delay_range=delay_range)
         except Exception as exc:                       # one bad image is not fatal
             log.warning("image download failed %s: %s", row["url"], exc)
             continue
@@ -53,6 +58,9 @@ def download_pending(conn, fetcher, cfg, limit: int = 500) -> int:
 
         db.record_image_download(conn, row["id"], str(target), digest, len(data))
         saved += 1
+        if saved % 10 == 0:
+            log.info("  ... %s/%s images", saved, len(rows))
+            conn.commit()
 
     conn.commit()
     return saved

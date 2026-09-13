@@ -76,6 +76,8 @@ def scrape_search(conn, cfg, fetcher: Fetcher, search, mark_missing: bool = True
                     db.touch_listing(conn, item["id"])
                     continue
 
+            log.info("[%s] listing %s/%s: %s %s", search.name, counts["seen"],
+                     search.max_listings or "?", item["id"], (item.get("title") or "")[:50])
             outcome, stored_id = _fetch_and_store(conn, cfg, fetcher, item, search, referer=url)
             # The ad page is the authority on its own id; record that too, so a
             # listing is never reported missing just because the two disagree.
@@ -254,7 +256,8 @@ def run_scrape(conf, conn, fetcher: Fetcher | None = None) -> dict:
         )
         conn.commit()
 
-    saved = images.download_pending(conn, fetcher, conf.images)
+    saved = images.download_pending(conn, fetcher, conf.images,
+                                    delay_range=conf.scrape.image_delay_range)
     log.info("downloaded %s images", saved)
 
     db.finish_run(

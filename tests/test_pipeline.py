@@ -44,10 +44,10 @@ class FakeFetcher:
             html = html.replace('"price":"5900"', '"price":"%s"' % price.split(" ")[0].replace(".", ""))
         return html.replace("2847612345", listing_id)
 
-    def get(self, url, referer=None, binary=False):
+    def get(self, url, referer=None, binary=False, delay_range=None):
         return self.fetch(url, referer=referer, binary=binary).content
 
-    def fetch(self, url, referer=None, binary=False):
+    def fetch(self, url, referer=None, binary=False, delay_range=None):
         self.requested.append(url)
         if binary:
             return Page(b"\xff\xd8\xff" + b"0" * 64, url, 200)   # a plausible JPEG

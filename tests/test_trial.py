@@ -32,10 +32,10 @@ class RealPageFetcher:
             search = search.replace(old, new)
         self.search_html = search
 
-    def get(self, url, referer=None, binary=False):
+    def get(self, url, referer=None, binary=False, delay_range=None):
         return self.fetch(url, referer=referer, binary=binary).content
 
-    def fetch(self, url, referer=None, binary=False):
+    def fetch(self, url, referer=None, binary=False, delay_range=None):
         self.requested.append(url)
         if binary:
             return Page(b"\xff\xd8\xff" + b"0" * 64, url, 200)
@@ -166,3 +166,21 @@ def test_render_includes_the_headline_numbers(conf, conn):
     assert "FIELD COVERAGE" in rendered
     assert "Scoring and email were not run" in rendered
     assert "VERDICT: looks good" in rendered
+
+
+def test_images_use_the_cdn_pace_not_the_search_pace(conf, conn):
+    """Images are ~90% of a run's requests; pacing them like search queries
+    turned a five-listing trial into a seven-minute silent wait."""
+    seen = []
+
+    class PaceRecordingFetcher(RealPageFetcher):
+        def get(self, url, referer=None, binary=False, delay_range=None):
+            seen.append((url, delay_range))
+            return super().get(url, referer=referer, binary=binary)
+
+    trial.run_trial(conf, conn, search(), PaceRecordingFetcher())
+
+    image_calls = [d for u, d in seen if "img.kleinanzeigen.de" in u]
+    assert image_calls, "no images were fetched"
+    assert all(d == conf.scrape.image_delay_range for d in image_calls)
+    assert conf.scrape.image_delay_range[1] < conf.scrape.min_delay_s

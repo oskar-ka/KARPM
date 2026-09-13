@@ -26,6 +26,11 @@ model = "MT-07"
 # roughly what a person browsing for an hour would make.
 min_delay_s = 4.0
 max_delay_s = 9.0
+# Images come from a static CDN, not the search backend, and a browser loads a
+# whole gallery at once. They are the large majority of a run's requests, so
+# pacing them like search queries multiplies the runtime for no benefit.
+image_min_delay_s = 0.4
+image_max_delay_s = 1.2
 timeout_s = 30.0
 max_retries = 3
 block_threshold = 3

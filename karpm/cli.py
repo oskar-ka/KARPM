@@ -286,9 +286,21 @@ def cmd_trial(args) -> int:
     conn = db.connect(conf.db_path)
     db.init_db(conn)
 
+    pace = (conf.scrape.min_delay_s + conf.scrape.max_delay_s) / 2
+    image_pace = sum(conf.scrape.image_delay_range) / 2
+    requests_est = args.pages + args.limit
+    images_est = 0 if args.no_images else args.limit * conf.images.max_per_listing
+    estimate = requests_est * pace + images_est * image_pace
+
     print(f"Trial run: {search.url}")
-    print(f"  at most {args.limit} listing(s), {args.pages} page(s); "
-          f"{conf.scrape.min_delay_s:.0f}-{conf.scrape.max_delay_s:.0f}s between requests\n")
+    print(f"  at most {args.limit} listing(s), {args.pages} page(s)")
+    print(f"  pacing: {conf.scrape.min_delay_s:.0f}-{conf.scrape.max_delay_s:.0f}s between "
+          f"pages, {conf.scrape.image_delay_range[0]:.1f}-"
+          f"{conf.scrape.image_delay_range[1]:.1f}s between images")
+    print(f"  expect roughly {estimate / 60:.1f} minute(s)"
+          f" ({requests_est} page(s)"
+          + (f" + up to {images_est} image(s)" if images_est else "")
+          + "). Progress is logged as it goes.\n")
 
     try:
         report = trial.run_trial(conf, conn, search, download_images=not args.no_images)
@@ -322,7 +334,8 @@ def cmd_trial(args) -> int:
 
 def cmd_images(args) -> int:
     conf, conn = _open(args)
-    saved = images.download_pending(conn, Fetcher(conf.scrape), conf.images, limit=args.limit)
+    saved = images.download_pending(conn, Fetcher(conf.scrape), conf.images, limit=args.limit,
+                                    delay_range=conf.scrape.image_delay_range)
     print(f"downloaded {saved} image(s)")
     conn.close()
     return 0
