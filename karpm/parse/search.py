@@ -68,7 +68,13 @@ def parse_result_count(soup) -> dict:
                 first = parse_int_de(match.group(1))
                 last = parse_int_de(match.group(2))
                 total = parse_int_de(match.group(3))
-                per_page = (last - first + 1) if (first and last and last >= first) else None
+                # The final page is usually a partial one - "126 - 143 von 143"
+                # is 18 ads, not a page size of 18, and dividing by it would
+                # claim the search has 8 pages instead of 6.
+                partial_last_page = bool(total and last == total and first and first > 1)
+                per_page = None
+                if first and last and last >= first and not partial_last_page:
+                    per_page = last - first + 1
                 pages = math.ceil(total / per_page) if (total and per_page) else None
                 return {"total_results": total, "per_page": per_page, "page_count": pages}
     return {"total_results": None, "per_page": None, "page_count": None}

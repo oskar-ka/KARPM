@@ -368,3 +368,19 @@ def test_a_404_on_the_first_search_page_is_still_an_error(conf, conn):
 
     with pytest.raises(FileNotFoundError):
         pipeline.enumerate_search(conf, NothingThere(), conf.searches[0])
+
+
+def test_page_one_stays_the_authority_on_page_count(conf, conn):
+    """A later page revises the total but must not revise the page size."""
+    class LastPageSummary(FakeFetcher):
+        def fetch(self, url, referer=None, binary=False, delay_range=None):
+            page = super().fetch(url, referer=referer, binary=binary)
+            if "/s-anzeige/" in url or binary:
+                return page
+            return page._replace(content=page.content.replace(
+                "1 - 25 von 143", "126 - 143 von 143"))
+
+    conf.searches[0].max_pages = 5
+    plan = pipeline.enumerate_search(conf, LastPageSummary(), conf.searches[0])
+    assert plan.total_results == 143
+    assert plan.page_count is None, "a partial page cannot imply a page count"

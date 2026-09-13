@@ -165,3 +165,47 @@ def test_a_blocked_page_raises_Blocked_not_a_generic_error(tmp_path, monkeypatch
     dumps = list((tmp_path / "dumps").glob("blocked_*.html"))
     assert dumps, "the offending page must be saved for inspection"
     assert "captcha" in dumps[0].read_text(encoding="utf-8")
+
+
+# --- the result count line ----------------------------------------------------
+
+def _summary(text):
+    from bs4 import BeautifulSoup
+
+    from karpm.parse.search import parse_result_count
+    return parse_result_count(BeautifulSoup(
+        f'<h1><span id="srp-breadcrumb-summary">{text}</span></h1>', "lxml"))
+
+
+def test_result_count_from_the_real_page(result):
+    """The search states its own size: "1 - 25 von 143 Motorrad ... in Bayern"."""
+    assert result["total_results"] == 143
+    assert result["per_page"] == 25
+    assert result["page_count"] == 6
+
+
+def test_a_middle_page_reports_the_same_shape():
+    assert _summary("26 - 50 von 143 Motorrad") == {
+        "total_results": 143, "per_page": 25, "page_count": 6}
+
+
+def test_the_partial_last_page_cannot_report_a_page_size():
+    """"126 - 143 von 143" is 18 ads, not a page size of 18 - inferring one
+    would claim the search has 8 pages instead of 6."""
+    got = _summary("126 - 143 von 143 Motorrad")
+    assert got["total_results"] == 143
+    assert got["per_page"] is None
+    assert got["page_count"] is None
+
+
+def test_a_single_page_search():
+    assert _summary("1 - 13 von 13 Motorrad") == {
+        "total_results": 13, "per_page": 13, "page_count": 1}
+
+
+def test_no_summary_is_not_an_error():
+    from bs4 import BeautifulSoup
+
+    from karpm.parse.search import parse_result_count
+    assert parse_result_count(BeautifulSoup("<html><body>x</body></html>", "lxml")) == {
+        "total_results": None, "per_page": None, "page_count": None}

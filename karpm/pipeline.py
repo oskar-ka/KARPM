@@ -104,8 +104,11 @@ def enumerate_search(cfg, fetcher: Fetcher, search) -> SearchPlan:
         plan.selector = result["selector"]
         if result.get("total_results") is not None:
             plan.total_results = result["total_results"]
-            plan.page_count = result.get("page_count")
-            plan.per_page = result.get("per_page")
+            # Page one is the authority on page size; later pages only revise
+            # the total, and the last one cannot report a size at all.
+            if plan.per_page is None:
+                plan.per_page = result.get("per_page")
+                plan.page_count = result.get("page_count")
 
         for item in result["items"]:
             # "Gesuch" ads are people wanting to buy, not sell. Storing them
