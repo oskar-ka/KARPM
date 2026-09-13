@@ -89,6 +89,13 @@ The report separates two kinds of gap: **MISSING** means a field should have
 parsed and did not — a bug worth reporting; *not stated* means the site never
 provides it for these ads (motorcycle listings have no `owners` or `condition`).
 
+**It is not fast, and that is deliberate.** Every listing is a real request to a
+real site. The run prints an estimate before it starts and logs each listing and
+each batch of images as it goes, so a long wait is visible rather than looking
+like a hang. With the default pacing `--limit 5` takes roughly a minute and a
+half; most of that is the ad photos, so `--no-images` cuts it to about half a
+minute.
+
 ---
 
 ## `raw`
@@ -157,6 +164,13 @@ karpm scrape
 
 No options — it takes its searches, page limits and delays from the config.
 Unlike `trial` this writes to the **real** database.
+
+Pages and images are paced separately — `min_delay_s`/`max_delay_s` for search
+and ad pages, `image_min_delay_s`/`image_max_delay_s` for photos. Photos come
+from a static CDN rather than the search backend and are the large majority of
+the requests a run makes, so pacing them like search queries multiplies the
+runtime without making the run any more polite to the site that matters.
+Progress is logged per listing and per batch of images.
 
 A listing that stops appearing in the search results is not assumed to be sold:
 its own page is fetched, and it is only delisted if that page confirms the ad is
