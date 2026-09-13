@@ -161,6 +161,15 @@ itself goes to `data/images/<ad_id>/<position>_<hash>.jpg`. Keeping the bytes
 means a listing stays reviewable after it is taken down — which is exactly when
 you most want to compare it against what is on the market now.
 
+**Renditions.** The CDN serves each photo under a `rule` naming a size and
+format: the gallery links `$_59.AUTO`, while the page's own JSON-LD links
+`$_59.JPG` for the same image. Not every rendition exists for every photo, so a
+404 on one says nothing about the others — the download tries the alternatives
+before giving up, and remembers which one worked so a CDN that has dropped a
+rendition does not cost a wasted request on every photo. A photo with no working
+rendition leaves its row with a NULL `local_path`, and the failure names the ad
+it belongs to.
+
 ## Querying it
 
 It is a plain SQLite file, so `sqlite3`, DB Browser for SQLite or pandas all

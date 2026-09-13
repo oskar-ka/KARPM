@@ -106,6 +106,11 @@ class Fetcher:
         about whether a listing still exists.
         """
         headers = {"Referer": referer} if referer else {}
+        if binary:
+            # The image CDN's ".AUTO" renditions pick a format from Accept, so
+            # asking for them with an HTML Accept header is asking the wrong
+            # question.
+            headers["Accept"] = "image/avif,image/webp,image/jpeg,image/png,*/*;q=0.8"
         last_error: Exception | None = None
         saw_block = False
 

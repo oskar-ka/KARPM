@@ -184,3 +184,118 @@ def test_images_use_the_cdn_pace_not_the_search_pace(conf, conn):
     assert image_calls, "no images were fetched"
     assert all(d == conf.scrape.image_delay_range for d in image_calls)
     assert conf.scrape.image_delay_range[1] < conf.scrape.min_delay_s
+
+
+# --- image renditions ----------------------------------------------------------
+
+def test_candidate_urls_covers_the_other_renditions():
+    from karpm.images import candidate_urls
+    got = candidate_urls("https://img.kleinanzeigen.de/x/abc?rule=$_59.AUTO")
+    assert got[0] == "https://img.kleinanzeigen.de/x/abc?rule=$_59.AUTO", "the linked one first"
+    assert "https://img.kleinanzeigen.de/x/abc?rule=$_59.JPG" in got
+    assert got[-1] == "https://img.kleinanzeigen.de/x/abc", "bare URL is the last resort"
+    assert len(got) == len(set(got)), "no repeats"
+
+
+def test_candidate_urls_leaves_a_ruleless_url_alone():
+    from karpm.images import candidate_urls
+    assert candidate_urls("https://img.kleinanzeigen.de/x/abc") == \
+        ["https://img.kleinanzeigen.de/x/abc"]
+
+
+def test_a_missing_rendition_falls_back_instead_of_losing_the_photo(conf, conn):
+    """The gallery links $_59.AUTO but that rendition does not always exist;
+    the same photo is usually there as $_59.JPG."""
+    class AutoRenditionGone(RealPageFetcher):
+        def __init__(self):
+            super().__init__()
+            self.image_requests = []
+
+        def get(self, url, referer=None, binary=False, delay_range=None):
+            if binary:
+                self.image_requests.append(url)
+                if "$_59.AUTO" in url:
+                    raise FileNotFoundError(f"404 for {url}")
+                return b"\xff\xd8\xff" + b"0" * 64
+            return super().get(url, referer=referer, binary=binary)
+
+    fetcher = AutoRenditionGone()
+    report = trial.run_trial(conf, conn, search(), fetcher)
+
+    assert report.image_stats["failed"] == 0, "every photo should have been recovered"
+    assert report.image_stats["downloaded"] == 20
+    assert any("$_59.AUTO" in u for u in fetcher.image_requests)
+    assert any("$_59.JPG" in u for u in fetcher.image_requests)
+
+
+def test_a_photo_with_no_working_rendition_is_reported_with_its_ad(conf, conn, caplog):
+    import logging
+
+    class EveryRenditionGone(RealPageFetcher):
+        def get(self, url, referer=None, binary=False, delay_range=None):
+            if binary:
+                raise FileNotFoundError(f"404 for {url}")
+            return super().get(url, referer=referer, binary=binary)
+
+    with caplog.at_level(logging.WARNING):
+        report = trial.run_trial(conf, conn, search(), EveryRenditionGone())
+
+    assert report.image_stats["failed"] == 20
+    assert "no rendition of this photo exists" in caplog.text
+    assert "kleinanzeigen.de/s-anzeige/" in caplog.text, "the ad URL must be named"
+
+
+def test_image_requests_ask_for_images(conf, conn):
+    """.AUTO renditions negotiate on Accept, so the header has to say image."""
+    from karpm.config import ScrapeConfig
+    from karpm.http import Fetcher
+
+    sent = {}
+
+    class Recorder:
+        def get(self, url, headers=None, timeout=None, allow_redirects=True):
+            sent.update(headers or {})
+            class R:
+                status_code = 200
+                content = b"\xff\xd8\xff"
+                url = "https://img.example/x"
+                headers = {"Content-Type": "image/jpeg"}
+                encoding = None
+            return R()
+
+    fetcher = Fetcher(ScrapeConfig(min_delay_s=0, max_delay_s=0))
+    fetcher.session = Recorder()
+    fetcher.get("https://img.example/x", binary=True)
+    assert sent["Accept"].startswith("image/")
+
+
+def test_a_working_rendition_is_remembered_for_the_rest_of_the_run(conf, conn):
+    """Otherwise a CDN that has dropped one rendition costs a wasted request on
+    every single photo."""
+    class AutoAlwaysGone(RealPageFetcher):
+        def __init__(self):
+            super().__init__()
+            self.image_requests = []
+
+        def get(self, url, referer=None, binary=False, delay_range=None):
+            if binary:
+                self.image_requests.append(url)
+                if "$_59.AUTO" in url:
+                    raise FileNotFoundError(f"404 for {url}")
+                return b"\xff\xd8\xff" + b"0" * 64
+            return super().get(url, referer=referer, binary=binary)
+
+    fetcher = AutoAlwaysGone()
+    report = trial.run_trial(conf, conn, search(), fetcher)
+
+    assert report.image_stats["downloaded"] == 20
+    wasted = [u for u in fetcher.image_requests if "$_59.AUTO" in u]
+    assert len(wasted) == 1, f"the dead rendition was retried {len(wasted)} times"
+
+
+def test_preferred_rendition_is_tried_first():
+    from karpm.images import candidate_urls
+    got = candidate_urls("https://img.example/x?rule=$_59.AUTO", preferred="$_59.JPG")
+    assert got[0] == "https://img.example/x?rule=$_59.JPG"
+    assert "https://img.example/x?rule=$_59.AUTO" in got
+    assert len(got) == len(set(got))

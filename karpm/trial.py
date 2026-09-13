@@ -109,10 +109,17 @@ def _image_stats(conn, saved: int, attempted: bool) -> dict:
     listings_with = conn.execute(
         "SELECT COUNT(DISTINCT listing_id) n FROM images WHERE local_path IS NOT NULL"
     ).fetchone()["n"]
+    failed_ads = []
+    if attempted and total > downloaded:
+        failed_ads = [dict(r) for r in conn.execute(
+            "SELECT DISTINCT l.id, l.url, l.title FROM images i "
+            "JOIN listings l ON l.id = i.listing_id "
+            "WHERE i.local_path IS NULL LIMIT 10").fetchall()]
     return {
         "urls": total,
         "downloaded": downloaded,
         "failed": (total - downloaded) if attempted else 0,
+        "failed_ads": failed_ads,
         "bytes": row["bytes"] or 0,
         "saved_this_run": saved,
         "listings_with_images": listings_with,
@@ -188,7 +195,11 @@ def render(report: TrialReport, limit_note: str = "") -> str:
         add(f"  downloaded           {stats['downloaded']}"
             f"   ({stats['bytes'] / 1e6:.1f} MB, {stats['listings_with_images']} listing(s))")
         if stats["failed"]:
-            add(f"  FAILED               {stats['failed']}")
+            add(f"  FAILED               {stats['failed']}   (no rendition of the photo "
+                f"could be fetched)")
+            for ad in stats.get("failed_ads", []):
+                add(f"    {(ad['title'] or '')[:44]}")
+                add(f"    {ad['url']}")
 
     if report.warnings:
         add("")
