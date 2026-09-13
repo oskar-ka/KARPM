@@ -10,6 +10,8 @@ import re
 import unicodedata
 from datetime import date, datetime, timedelta
 
+from bs4 import BeautifulSoup
+
 MONTHS_DE = {
     "januar": 1, "februar": 2, "märz": 3, "maerz": 3, "april": 4, "mai": 5, "juni": 6,
     "juli": 7, "august": 8, "september": 9, "oktober": 10, "november": 11, "dezember": 12,
@@ -26,6 +28,36 @@ def clean(text: str | None) -> str | None:
     text = re.sub(r"[ \t]+", " ", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip() or None
+
+
+# Tags that end a line of their own. <br> is the one that matters - ad
+# descriptions are written in a plain textarea and come back with one per line.
+_BREAKS = ("p", "div", "li", "tr", "h1", "h2", "h3", "h4", "blockquote")
+
+
+def html_to_text(value: str | None) -> str | None:
+    """Plain text from a description that arrives as markup.
+
+    The JSON-LD block and the Astro payload both carry the description as HTML -
+    a `<br />` per line break and entities for punctuation - so keeping the
+    string as it stands puts tags in the database, in the scoring prompt and in
+    the email. The CSS-selector path never had this problem because it reads
+    `get_text()`, which is why it went unnoticed on the older ad pages.
+    """
+    if value is None:
+        return None
+    if "<" not in value and "&" not in value:
+        return clean(value)             # already plain; nothing to undo
+
+    frag = BeautifulSoup(value, "html.parser")
+    for br in frag.find_all("br"):
+        br.replace_with("\n")
+    for block in frag.find_all(_BREAKS):
+        block.append("\n")
+    # get_text also resolves the entities, so &#x2F; is a slash by here.
+    text = frag.get_text()
+    text = "\n".join(line.strip() for line in text.splitlines())
+    return clean(text)
 
 
 def slug(label: str) -> str:

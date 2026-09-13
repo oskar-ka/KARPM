@@ -22,6 +22,7 @@ from .fields import (
     ad_id_from_url,
     apply_attributes,
     clean,
+    html_to_text,
     parse_location,
     parse_posted,
     parse_price,
@@ -158,7 +159,8 @@ def parse_detail_page(html: str, url: str | None = None) -> dict:
     for block in _jsonld(soup):
         if block.get("@type") in ("Product", "Offer", "Vehicle", "Motorcycle", "Car"):
             out.setdefault("title", clean(block.get("name")))
-            out.setdefault("description", clean(block.get("description")))
+            # Both payloads carry the description as HTML, not as text.
+            out.setdefault("description", html_to_text(block.get("description")))
             offers = block.get("offers") or {}
             if isinstance(offers, list):
                 offers = offers[0] if offers else {}
@@ -191,7 +193,7 @@ def parse_detail_page(html: str, url: str | None = None) -> dict:
         seeded_images.extend(_astro_images(astro))
         raw_attrs.update(_astro_attributes(astro))
         out.setdefault("title", clean(astro.get("title")))
-        out.setdefault("description", clean(astro.get("description")))
+        out.setdefault("description", html_to_text(astro.get("description")))
         if astro.get("formattedCreationDate"):
             posted = parse_posted(astro["formattedCreationDate"])
             if posted:
@@ -256,7 +258,7 @@ def parse_detail_page(html: str, url: str | None = None) -> dict:
         out["title"] = clean(meta.get("content")) if meta else None
     if not out.get("description"):
         meta = soup.select_one("meta[property='og:description'], meta[name='description']")
-        out["description"] = clean(meta.get("content")) if meta else None
+        out["description"] = html_to_text(meta.get("content")) if meta else None
     if not out.get("image_urls"):
         out["image_urls"] = [
             m["content"] for m in soup.select("meta[property='og:image'][content]")

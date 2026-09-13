@@ -4,13 +4,16 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import sqlite3
 from datetime import datetime, timezone
 from importlib import resources
 from pathlib import Path
 from typing import Any, Iterable
 
-SCHEMA_VERSION = 3
+log = logging.getLogger(__name__)
+
+SCHEMA_VERSION = 4
 
 
 def utcnow() -> str:
@@ -47,6 +50,7 @@ MIGRATIONS = {
 
 def init_db(conn: sqlite3.Connection) -> None:
     schema = resources.files("karpm").joinpath("schema.sql").read_text(encoding="utf-8")
+    was = conn.execute("PRAGMA user_version").fetchone()[0]
     # Migrate first: schema.sql recreates the listing_current view, which can
     # only reference columns that already exist. On a fresh database every
     # PRAGMA below returns nothing and this is a no-op.
@@ -54,6 +58,47 @@ def init_db(conn: sqlite3.Connection) -> None:
     conn.executescript(schema)
     conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
     conn.commit()
+
+    if 0 < was < 4:
+        repaired = repair_descriptions(conn)
+        if repaired:
+            log.warning(
+                "cleaned the stored markup out of %s description(s). Their scores "
+                "were made from the old text, so they will be scored again on the "
+                "next scoring run - which costs API credits.", repaired)
+
+
+def repair_descriptions(conn: sqlite3.Connection) -> int:
+    """Rewrite descriptions that were stored as HTML rather than as text.
+
+    Before schema v4 the description was taken straight from the JSON-LD block
+    or the Astro payload, both of which carry it as markup, so rows scraped
+    from the newer ad pages hold `<br />` and `&#x2F;` instead of line breaks
+    and slashes. The text went into the scoring prompt that way too.
+
+    content_hash is recomputed to match, which is what makes the next scoring
+    run redo them. Leaving it stale would only postpone that: the next refresh
+    of the ad would compute a hash from the clean text, record an "edited"
+    event that never happened, and re-score anyway.
+    """
+    from .parse.fields import html_to_text     # local: parse does not import db
+
+    rows = conn.execute(
+        "SELECT id, title, description, price_eur FROM listings "
+        "WHERE description LIKE '%<%' OR description LIKE '%&%'"
+    ).fetchall()
+    fixed = 0
+    for row in rows:
+        cleaned = html_to_text(row["description"])
+        if cleaned == row["description"]:
+            continue                    # a bare < or & in ordinary prose
+        conn.execute(
+            "UPDATE listings SET description = ?, content_hash = ? WHERE id = ?",
+            (cleaned, content_hash(row["title"], cleaned, row["price_eur"]), row["id"]),
+        )
+        fixed += 1
+    conn.commit()
+    return fixed
 
 
 def _migrate(conn: sqlite3.Connection) -> None:

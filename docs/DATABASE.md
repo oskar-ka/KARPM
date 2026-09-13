@@ -335,6 +335,22 @@ is just running any command — existing rows and their history are preserved.
 | 1 | Initial schema. |
 | 2 | `listings.delisted_reason`, `missing_since`, `missing_count`, `last_verified_at` — added with delisting verification. |
 | 3 | `commands` and `app_state` — the web UI's queue and the daemon's status, added with `karpm web`. |
+| 4 | No schema change. Descriptions stored as markup are rewritten as text, and their `content_hash` recomputed. |
+
+### Data migrations
+
+Version 4 changed no columns. Two of the three parsing layers take the
+description from a payload that carries it as HTML — `<br />` per line, entities
+for punctuation — and it was being stored as it stood, so ads scraped from the
+newer Kleinanzeigen pages held markup in the database, in the scoring prompt and
+on the page. `db.repair_descriptions()` rewrites those rows once, on the first
+open of an older database, and says how many it changed.
+
+It recomputes `content_hash` for each row it touches, which means those listings
+are scored again on the next scoring run — their existing scores were made from
+the mangled text. Leaving the hash stale would only postpone that: the next
+refresh of the ad would hash the clean text, record an `edited` event that never
+happened, and re-score anyway.
 
 ## Changing the schema
 
