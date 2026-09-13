@@ -225,8 +225,7 @@ def scrape_search(conn, cfg, fetcher: Fetcher, search, mark_missing: bool = True
         db.touch_listing(conn, item["id"])
 
     for index, item in enumerate(plan.to_fetch, start=1):
-        log.info("[%s] ad %s/%s: %s %s", search.name, index, len(plan.to_fetch),
-                 item["id"], (item.get("title") or "")[:50])
+        log.info("[%s] ad %s/%s: %s", search.name, index, len(plan.to_fetch), item["id"])
         outcome, stored_id, photos = _fetch_and_store(conn, cfg, fetcher, item, search,
                                                       referer=search.url)
         # The search page already said how many photos this ad has. Finding far

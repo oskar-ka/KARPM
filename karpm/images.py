@@ -84,9 +84,8 @@ def download_pending(conn, fetcher, cfg, limit: int | None = None,
         if listing_id != current:
             current = listing_id
             remaining = len(rows) - attempted - by_listing[listing_id]
-            title = (row["listing_title"] or "")[:40] if "listing_title" in row.keys() else ""
-            log.info("  %s photo(s) of %s %s - %s to go%s",
-                     by_listing[listing_id], listing_id, title, max(remaining, 0),
+            log.info("  %s photo(s) of %s - %s to go%s",
+                     by_listing[listing_id], listing_id, max(remaining, 0),
                      _eta(started, attempted, len(rows)))
         attempted += 1
         per_listing[listing_id] = per_listing.get(listing_id, 0) + 1

@@ -161,11 +161,13 @@ itself goes to `data/images/<ad_id>/<position>_<hash>.jpg`. Keeping the bytes
 means a listing stays reviewable after it is taken down — which is exactly when
 you most want to compare it against what is on the market now.
 
-**Where the URLs come from.** An ad page lists its gallery twice: as `<img>`
-elements, and as JSON-LD `ImageObject` blocks. Both are read and merged, keyed
-on the photo's path so the same image is not collected once per rendition.
-Reading only the first source that matched anything meant a page whose
-`#viewad-image` is just the main photo yielded exactly one image per ad.
+**Where the URLs come from.** An ad page lists its photos in up to three
+places: JSON-LD `ImageObject` blocks, the gallery `<img>` elements, and
+sometimes a `Product` block naming one image. All three are read and merged,
+keyed on the photo's path so the same image is not collected once per
+rendition. Every earlier version of this treated one source as authoritative
+and skipped the others, which stored one photo per ad for whichever ads
+happened to hit that path.
 Anything inside an `article[data-adid]` is skipped — those are the "similar
 ads" cards showing other people's bikes.
 

@@ -192,3 +192,38 @@ def test_similar_ads_photos_are_not_collected(fixed):
 def test_the_json_ld_rendition_is_preferred(fixed):
     """It is server-rendered and it is the rendition the page itself cites."""
     assert all("$_59.JPG" in u for u in fixed["image_urls"])
+
+
+def test_a_product_block_does_not_replace_the_gallery():
+    """An ad page carrying a Product block that names a single image used to
+    short-circuit gallery collection entirely, storing one photo per ad while
+    the pages without such a block were fine - which is why it looked like the
+    first ad worked and every later one did not."""
+    import re
+
+    from karpm.parse.detail import parse_detail_page
+
+    html = (FIXTURES / FIXED[0]).read_text(encoding="utf-8")
+    product = ('<script type="application/ld+json">{"@type":"Product","name":"BMW",'
+               '"image":"https://img.kleinanzeigen.de/api/v1/prod-ads/images/zz/zzzz'
+               '?rule=$_59.JPG","offers":{"@type":"Offer","price":"4000"}}</script>')
+    seeded = re.sub(r"(<body[^>]*>)", lambda m: m.group(1) + product, html, count=1)
+    assert "zz/zzzz" in seeded, "the test must actually inject the block"
+
+    data = parse_detail_page(seeded, FIXED[1])
+    assert len(data["image_urls"]) == 14, "13 gallery photos plus the one it named"
+    assert any("zz/zzzz" in u for u in data["image_urls"])
+
+
+def test_a_product_block_naming_several_images_is_merged_too():
+    import re
+
+    from karpm.parse.detail import parse_detail_page
+
+    html = (FIXTURES / VB[0]).read_text(encoding="utf-8")
+    product = ('<script type="application/ld+json">{"@type":"Product","name":"BMW",'
+               '"image":["https://img.kleinanzeigen.de/x/one?rule=$_59.JPG",'
+               '"https://img.kleinanzeigen.de/x/two?rule=$_59.JPG"]}</script>')
+    seeded = re.sub(r"(<body[^>]*>)", lambda m: m.group(1) + product, html, count=1)
+    data = parse_detail_page(seeded, VB[1])
+    assert len(data["image_urls"]) == 10, "8 gallery photos plus the two it named"

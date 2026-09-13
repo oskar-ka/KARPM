@@ -92,6 +92,7 @@ def parse_detail_page(html: str, url: str | None = None) -> dict:
     out: dict = {"url": url}
     warnings: list[str] = []
     raw_attrs: dict[str, str] = {}
+    seeded_images: list[str] = []
 
     # --- layer 1: JSON-LD ---
     for block in _jsonld(soup):
@@ -109,7 +110,10 @@ def parse_detail_page(html: str, url: str | None = None) -> dict:
                     pass
             images = block.get("image")
             if images:
-                out["image_urls"] = [images] if isinstance(images, str) else list(images)
+                # One more source, not the answer: a Product block often names
+                # a single image, and taking it as the gallery used to skip the
+                # gallery entirely and store one photo per ad.
+                seeded_images.extend([images] if isinstance(images, str) else list(images))
             if block.get("mileageFromOdometer"):
                 mileage = block["mileageFromOdometer"]
                 raw_attrs["Kilometerstand"] = str(
@@ -159,8 +163,8 @@ def parse_detail_page(html: str, url: str | None = None) -> dict:
     out["seller_id"] = _seller_id(soup)
     out["view_count"] = _view_count(soup)
 
-    if not out.get("image_urls"):
-        out["image_urls"] = _images(soup, url or BASE)
+    # Always read the gallery; whatever JSON-LD offered is merged into it.
+    out["image_urls"] = _images(soup, url or BASE, seeded_images)
 
     # --- layer 3: meta tags ---
     if not out.get("title"):
@@ -238,7 +242,7 @@ def _tags(soup, known: dict[str, str]) -> list[str]:
     return tags
 
 
-def _images(soup, base_url: str) -> list[str]:
+def _images(soup, base_url: str, seeded: list[str] | None = None) -> list[str]:
     """Every photo of this ad, from both places the page lists them.
 
     Two rules matter here. Collect from *all* the selectors rather than stopping
@@ -265,6 +269,9 @@ def _images(soup, base_url: str) -> list[str]:
             return
         seen_photos.add(photo)
         urls.append(full)
+
+    for seed in seeded or ():
+        add(seed)
 
     for block, tag in _jsonld_with_tags(soup):
         if block.get("@type") != "ImageObject":
