@@ -98,15 +98,20 @@ and `trial` go through the polite fetcher, which retries and sleeps on anything
 suspicious; when *that* is the thing misbehaving, this bypasses it.
 
 ```bash
+karpm raw --search bmw-r1200gs            # use a search from config.toml
 karpm raw "https://www.kleinanzeigen.de/s-motorraeder-roller/..."
-karpm raw "<url>" --save page.html
+karpm raw --search bmw-r1200gs --save page.html
 ```
 
 | Argument / flag | Default | Meaning |
 |---|---|---|
-| `url` | required | URL to fetch. |
+| `url` | — | URL to fetch. Omit when using `--search`. |
+| `--search NAME` | — | Fetch the URL of this search from `config.toml` instead of typing it. |
 | `--save PATH` | — | Write the body here instead of printing a 600-character preview. |
 | `--no-redirects` | off | Do not follow redirects — shows the first response as-is. |
+
+Give it a URL **or** `--search`, not both. An unknown search name exits `2` and
+lists the names that are configured.
 
 Reports status, elapsed time, final URL and redirect chain, content type, size,
 the header encoding, **which block markers matched** (the reason the fetcher
@@ -301,7 +306,7 @@ karpm top --min-score 4 --limit 20
 | `0` | Success. For `digest`, that includes "there was nothing new to send". |
 | `1` | `trial`: a required field failed to parse, or an image download failed. `score-one`: listing id not in the database. `digest`: the send failed. `score`: an instant alert failed to send. |
 | `1` | `raw`: the request itself failed. |
-| `2` | Bad arguments — for example `trial --search` naming a search that is not in the config. |
+| `2` | Bad arguments: a missing or contradictory flag, or `--search` naming a search that is not in the config (the message lists the valid names). |
 
 `daemon` only exits on a signal, and exits `0`; per-run failures are logged and
 recorded in the `runs` table rather than ending the process.

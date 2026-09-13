@@ -116,6 +116,20 @@ def _page_kind(html: str, explicit: str, url: str | None) -> str:
     return "detail" if any(marker in html for marker in DETAIL_MARKERS) else "search"
 
 
+class SearchNotFound(LookupError):
+    """Raised when --search names something that is not in the config."""
+
+
+def _search_by_name(conf, name: str, config_path: str):
+    configured = {s.name: s for s in conf.searches}
+    if name not in configured:
+        raise SearchNotFound(
+            f"no search named {name!r} in {config_path}. "
+            f"Available: {', '.join(configured) or 'none'}"
+        )
+    return configured[name]
+
+
 def cmd_raw(args) -> int:
     """One request, no retries, no backoff - just what the server said.
 
@@ -130,6 +144,17 @@ def cmd_raw(args) -> int:
     from .http import BLOCK_MARKERS, decode
 
     conf = load_config(args.config)
+
+    if args.search:
+        try:
+            url = _search_by_name(conf, args.search, args.config).url
+        except SearchNotFound as exc:
+            print(exc, file=sys.stderr)
+            return 2
+        print(f"search {args.search!r} ->")
+    else:
+        url = args.url
+
     session = requests.Session()
     session.headers.update({
         "User-Agent": conf.scrape.user_agent,
@@ -137,10 +162,10 @@ def cmd_raw(args) -> int:
         "Accept-Language": conf.scrape.accept_language,
     })
 
-    print(f"GET {args.url}")
+    print(f"GET {url}")
     started = time.monotonic()
     try:
-        resp = session.get(args.url, timeout=conf.scrape.timeout_s,
+        resp = session.get(url, timeout=conf.scrape.timeout_s,
                            allow_redirects=not args.no_redirects)
     except requests.RequestException as exc:
         print(f"\nrequest failed after {time.monotonic() - started:.1f}s: "
@@ -240,12 +265,12 @@ def cmd_trial(args) -> int:
         search = SearchConfig(name="trial", url=args.url, make=args.make, model=args.model,
                               max_pages=args.pages, max_listings=args.limit)
     else:
-        configured = {s.name: s for s in conf.searches}
-        if args.search not in configured:
-            print(f"no search named {args.search!r} in {args.config}. "
-                  f"Available: {', '.join(configured) or 'none'}", file=sys.stderr)
+        try:
+            configured = _search_by_name(conf, args.search, args.config)
+        except SearchNotFound as exc:
+            print(exc, file=sys.stderr)
             return 2
-        search = SearchConfig(**{**vars(configured[args.search]),
+        search = SearchConfig(**{**vars(configured),
                                  "max_pages": args.pages, "max_listings": args.limit})
 
     conf.db_path = args.db
@@ -384,7 +409,9 @@ def main(argv: list[str] | None = None) -> int:
 
     p_raw = sub.add_parser(
         "raw", help="one request, no retries or backoff - show exactly what the server returned")
-    p_raw.add_argument("url", help="URL to fetch")
+    p_raw.add_argument("url", nargs="?",
+                       help="URL to fetch (omit when using --search)")
+    p_raw.add_argument("--search", help="fetch the URL of this search from config.toml")
     p_raw.add_argument("--save", help="write the body here instead of printing a preview")
     p_raw.add_argument("--no-redirects", action="store_true", help="do not follow redirects")
     p_raw.set_defaults(func=cmd_raw)
@@ -441,6 +468,11 @@ def main(argv: list[str] | None = None) -> int:
     _setup_logging(args.verbose)
     if args.command == "probe" and not (args.url or args.file):
         parser.error("probe needs --url or --file")
+    if args.command == "raw":
+        if not (args.url or args.search):
+            parser.error("raw needs a URL or --search NAME")
+        if args.url and args.search:
+            parser.error("raw takes a URL or --search, not both")
     return args.func(args)
 
 
