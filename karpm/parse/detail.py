@@ -62,6 +62,66 @@ def _first_text(soup, selectors) -> str | None:
     return None
 
 
+# Kleinanzeigen is migrating ad pages to an Astro app. On those the gallery is
+# not in the markup at all - the page ships one <img> and hands the rest to a
+# hydration payload for JavaScript to render. The payload is server-rendered
+# JSON, so the photos are there to be read; they are just not where a scraper
+# would look. Largest rendition first.
+GALLERY_RENDITIONS = ("xxLargeUrl", "xLargeUrl", "large3Url", "large2Url", "largeUrl",
+                      "teaserUrl", "thumbnail2Url", "thumbnailUrl")
+
+
+def _unwrap_astro(value):
+    """Astro encodes every value as [typeCode, value]. Strip the codes."""
+    if isinstance(value, list) and len(value) == 2 and isinstance(value[0], int):
+        value = value[1]
+    if isinstance(value, list):
+        return [_unwrap_astro(v) for v in value]
+    if isinstance(value, dict):
+        return {k: _unwrap_astro(v) for k, v in value.items()}
+    return value
+
+
+def astro_ad_data(soup) -> dict | None:
+    """The ad's own data from the hydration payload, if this is the new page.
+
+    Several islands carry the whole blob; the substring check avoids parsing
+    megabytes of JSON for the ones that cannot help.
+    """
+    for island in soup.find_all("astro-island"):
+        props = island.get("props") or ""
+        if "imageDetails" not in props:
+            continue
+        try:
+            decoded = json.loads(props)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        data = _unwrap_astro(decoded.get("data"))
+        if isinstance(data, dict) and isinstance(data.get("imageDetails"), dict):
+            return data
+    return None
+
+
+def _astro_images(data: dict) -> list[str]:
+    photos = []
+    for entry in (data.get("imageDetails") or {}).get("imageList") or []:
+        if not isinstance(entry, dict):
+            continue
+        for key in GALLERY_RENDITIONS:
+            if entry.get(key):
+                photos.append(entry[key])
+                break
+    return photos
+
+
+def _astro_attributes(data: dict) -> dict[str, str]:
+    attrs = {}
+    for entry in data.get("localizedAttributes") or []:
+        if isinstance(entry, dict) and entry.get("localizedName"):
+            attrs[entry["localizedName"]] = entry.get("localizedValue") or ""
+    return attrs
+
+
 def _jsonld_with_tags(soup):
     """JSON-LD blocks paired with the script tag they came from, so callers can
     tell where in the page a block sits."""
@@ -125,6 +185,27 @@ def parse_detail_page(html: str, url: str | None = None) -> dict:
                 brand = block["brand"]
                 raw_attrs["Marke"] = str(brand.get("name") if isinstance(brand, dict) else brand)
 
+    # --- layer 1b: the hydration payload of the new Astro ad page ---
+    astro = astro_ad_data(soup)
+    if astro:
+        seeded_images.extend(_astro_images(astro))
+        raw_attrs.update(_astro_attributes(astro))
+        out.setdefault("title", clean(astro.get("title")))
+        out.setdefault("description", clean(astro.get("description")))
+        if astro.get("formattedCreationDate"):
+            posted = parse_posted(astro["formattedCreationDate"])
+            if posted:
+                out["posted_at"] = posted.isoformat(timespec="seconds")
+        # The payload states these outright, rather than leaving them to be
+        # guessed from where a word appears in the page text.
+        seller = astro.get("userDetails") or {}
+        if isinstance(seller.get("commercial"), bool):
+            out["seller_type"] = "commercial" if seller["commercial"] else "private"
+        if seller.get("userId"):
+            out["seller_id"] = str(seller["userId"])
+        if seller.get("contactName"):
+            out["seller_name"] = clean(seller["contactName"])
+
     # --- layer 2: CSS selectors ---
     if not out.get("title"):
         out["title"] = _first_text(soup, TITLE_SELECTORS)
@@ -150,17 +231,20 @@ def parse_detail_page(html: str, url: str | None = None) -> dict:
     postcode, location = parse_location(_first_text(soup, LOCALITY_SELECTORS))
     out["postcode"], out["location"] = postcode, location
 
-    posted = None
-    for node in soup.select(", ".join(DATE_SELECTORS)):
-        posted = parse_posted(clean(node.get_text()))
-        if posted:
-            break
-    out["posted_at"] = posted.isoformat(timespec="seconds") if posted else None
+    if not out.get("posted_at"):
+        posted = None
+        for node in soup.select(", ".join(DATE_SELECTORS)):
+            posted = parse_posted(clean(node.get_text()))
+            if posted:
+                break
+        out["posted_at"] = posted.isoformat(timespec="seconds") if posted else None
 
-    seller_text = _first_text(soup, SELLER_SELECTORS)
-    out["seller_name"] = seller_text
-    out["seller_type"] = parse_seller_type(soup.get_text(" ", strip=True)[:6000])
-    out["seller_id"] = _seller_id(soup)
+    if not out.get("seller_name"):
+        out["seller_name"] = _first_text(soup, SELLER_SELECTORS)
+    if not out.get("seller_type"):
+        out["seller_type"] = parse_seller_type(soup.get_text(" ", strip=True)[:6000])
+    if not out.get("seller_id"):
+        out["seller_id"] = _seller_id(soup)
     out["view_count"] = _view_count(soup)
 
     # Always read the gallery; whatever JSON-LD offered is merged into it.
@@ -265,6 +349,8 @@ def image_sources(html: str, base_url: str = BASE) -> dict:
                     if n.get("src") or n.get("data-imgsrc") or n.get("data-src")
                     or n.get("content")]
         counts[f"selector {selector}"] = len(with_src)
+    astro = astro_ad_data(soup)
+    counts["astro hydration payload"] = len(_astro_images(astro)) if astro else 0
     counts["meta og:image"] = len(soup.select("meta[property='og:image'][content]"))
     counts["TOTAL collected"] = len(_images(soup, base_url))
     return counts

@@ -16,10 +16,14 @@ unattended on a Raspberry Pi.
 
 ## Things that are easy to get wrong here
 
-- **Kleinanzeigen serves two different stacks.** Search results are an Astro app
-  with Tailwind class names that carry no meaning and churn; ad pages are still
-  the older `#viewad-*` markup. The search parser therefore matches on the
-  *shape of the text* (a price looks like `1.250 € VB`), not on class names.
+- **Kleinanzeigen serves two different stacks, and is migrating between them.**
+  Search results are an Astro app with Tailwind class names that carry no
+  meaning and churn, so the search parser matches on the *shape of the text* (a
+  price looks like `1.250 € VB`), not on class names. Ad pages exist in both
+  shapes at once: the older `#viewad-*` markup, and an Astro version that ships
+  one `<img>` and leaves the gallery to a hydration payload
+  (`astro-island` props → `data.imageDetails.imageList`). Both routes must keep
+  working; fixtures exist for each.
 - **Encoding.** Responses arrive without a charset header, so `requests` falls
   back to Latin-1 and mangles every umlaut. `http.decode()` handles this; do not
   reach for `resp.text` directly.
@@ -27,6 +31,11 @@ unattended on a Raspberry Pi.
   and without it listings cannot be grouped into price comparables.
 - **A failed parse must never overwrite a good value** with `None`, and must
   show up in `parse_warnings` rather than silently becoming NULL.
+- **Check a fix against the page that actually failed.** Three attempts at one
+  image bug were reasoned from the two ad pages on hand, and all three were
+  wrong about the cause, because those pages were the old stack and the failing
+  ones were not. `karpm trial` saves short-gallery pages into `scrape.dump_dir`
+  and `karpm probe` prints a per-source photo count for exactly this.
 - **Silence is the enemy.** A scraper returning rows of NULLs, or a digest that
   could not send, must not look like success. Check `karpm trial` still passes.
 

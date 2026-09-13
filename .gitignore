@@ -230,3 +230,4 @@ tests/fixtures/live_*.html
 !tests/fixtures/live_search_p2.html
 !tests/fixtures/live_search_plast.html
 !tests/fixtures/live_search_p5_datalink.html
+!tests/fixtures/live_detail_astro.html
