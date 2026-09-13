@@ -786,8 +786,9 @@ def test_an_attribute_with_no_field_is_still_shown(client, app):
 
 
 def test_a_value_that_would_not_parse_is_still_shown(client, app):
-    """"HU: Neu" is mapped to a column and is not a date. Filtering it out as
-    "already shown" would lose the only thing the ad said about the TUEV."""
+    """"HU: Neu" is mapped to a column and is not a date. It appears in the HU
+    row itself, rather than being filtered out as "already shown" - which would
+    lose the only thing the ad said about the TUEV."""
     _, config_path, _ = app
     with opened(config_path) as conn:
         conn.execute("UPDATE listings SET attributes_json = ?, inspection_until = NULL "
@@ -807,13 +808,95 @@ def test_the_worked_out_panel_shows_what_it_can(client, app):
     assert "worked out" in page
 
 
-def test_distance_is_shown_only_when_home_is_set(client, app):
+def test_distance_says_why_it_cannot_be_worked_out(client, app):
+    """The row is always there; what changes is whether it holds a number."""
     _, config_path, _ = app
     with opened(config_path) as conn:
         conn.execute("UPDATE listings SET postcode = '80331' WHERE id = '2847612345'")
         conn.commit()
-    assert b"from home" not in client.get("/listing/2847612345").get_data()
+    body = client.get("/listing/2847612345").get_data(as_text=True)
+    assert "distance from home" in body
+    assert "set home_plz in the config" in body
 
     config_path.write_text('home_plz = "22765"\n' + config_path.read_text(encoding="utf-8"),
                            encoding="utf-8")
-    assert b"from home" in client.get("/listing/2847612345").get_data()
+    body = client.get("/listing/2847612345").get_data(as_text=True)
+    assert "set home_plz" not in body
+    assert "km" in body
+
+
+def test_a_listing_with_a_postcode_we_do_not_know_says_so(client, app):
+    _, config_path, _ = app
+    config_path.write_text('home_plz = "22765"\n' + config_path.read_text(encoding="utf-8"),
+                           encoding="utf-8")
+    with opened(config_path) as conn:
+        conn.execute("UPDATE listings SET postcode = NULL, location = NULL "
+                     "WHERE id = '2847612345'")
+        conn.commit()
+    assert "no usable postcode" in client.get("/listing/2847612345").get_data(as_text=True)
+
+
+def test_every_listing_shows_the_same_rows(client, app):
+    """Two listings have to be comparable, so a field the ad never filled in
+    says so rather than vanishing."""
+    from karpm.web.app import SPECIFICATIONS
+    _, config_path, _ = app
+    with opened(config_path) as conn:
+        conn.execute("UPDATE listings SET km = NULL, hp = NULL, ccm = NULL, "
+                     "owners = NULL, drive_type = NULL, transmission = NULL, "
+                     "condition = NULL, inspection_until = NULL, bike_type = NULL, "
+                     "first_reg_date = NULL, price_eur = NULL WHERE id = '2847612345'")
+        conn.commit()
+    body = client.get("/listing/2847612345").get_data(as_text=True)
+    specs = body[body.index("<h2>specifications</h2>"):body.index("<h2>score</h2>")]
+    for label, _, _, _ in SPECIFICATIONS:
+        assert f"<dt>{label}</dt>" in specs, label
+    # Every one of them is marked as not being a value.
+    assert specs.count('class="absent"') == len(SPECIFICATIONS)
+    assert "no price given" in specs
+
+
+def test_what_the_ad_said_is_shown_even_when_it_would_not_parse(client, app):
+    """"HU: Neu" is something the ad said. Reporting the column as "not stated"
+    would be a second way of losing it."""
+    _, config_path, _ = app
+    with opened(config_path) as conn:
+        conn.execute("UPDATE listings SET inspection_until = NULL, attributes_json = ? "
+                     "WHERE id = '2847612345'", ('{"HU": "Neu"}',))
+        conn.commit()
+    specs = client.get("/listing/2847612345").get_data(as_text=True)
+    assert "Neu — not a usable value" in specs
+    assert "<dt>HU until</dt>" in specs
+
+
+def test_a_missing_derived_figure_says_what_it_would_need(client, app):
+    _, config_path, _ = app
+    with opened(config_path) as conn:
+        conn.execute("UPDATE listings SET km = NULL, inspection_until = NULL, "
+                     "posted_at = NULL WHERE id = '2847612345'")
+        conn.commit()
+    body = client.get("/listing/2847612345").get_data(as_text=True)
+    assert "needs mileage and a registration date" in body
+    assert "no HU date" in body
+
+
+def test_the_panels_are_named_as_asked(client):
+    body = client.get("/listing/2847612345").get_data(as_text=True)
+    for heading in ("specifications", "derived figures", "miscellaneous figures"):
+        assert f"<h2>{heading}</h2>" in body
+
+
+def test_the_price_is_a_specification(client, app):
+    _, config_path, _ = app
+    body = client.get("/listing/2847612345").get_data(as_text=True)
+    specs = body[body.index("<h2>specifications</h2>"):body.index("<h2>score</h2>")]
+    assert "<dt>price</dt>" in specs
+    assert "5.900" in specs
+
+
+def test_a_negotiable_price_is_marked(client, app):
+    _, config_path, _ = app
+    with opened(config_path) as conn:
+        conn.execute("UPDATE listings SET price_kind = 'vb' WHERE id = '2847612345'")
+        conn.commit()
+    assert "5.900 € VB" in client.get("/listing/2847612345").get_data(as_text=True)

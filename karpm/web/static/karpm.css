@@ -128,3 +128,7 @@ button.link:hover { color: var(--bad); filter: none; }
             letter-spacing: .05em; color: var(--muted); }
 .panel .note { color: var(--muted); font-size: 12.5px; margin: 10px 0 0; max-width: 60ch; }
 .warn-text { color: var(--warn); }
+
+/* A field the ad never filled in. Said, not hidden - two listings have to be
+   comparable, and "not stated" is itself worth knowing. */
+.kv dd.absent { color: var(--muted); font-style: italic; }

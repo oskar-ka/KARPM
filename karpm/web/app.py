@@ -108,10 +108,10 @@ def create_app(config_path: str = "config.toml") -> Flask:
                 (listing_id,)).fetchall()
             return render_template(
                 "listing.html", row=row, images=images, history=history,
-                scores=scores, facts=_headline_facts(row),
-                derived=derived.summarise(conn, row, conf().home_plz),
-                changes=derived.price_history(conn, listing_id),
-                rest=_other_facts(row))
+                scores=scores, specifications=_specifications(row),
+                figures=_derived_rows(
+                    derived.summarise(conn, row, conf().home_plz), conf().home_plz),
+                misc=_miscellaneous(row))
         finally:
             conn.close()
 
@@ -448,80 +448,152 @@ def _backup(path: Path) -> None:
         shutil.copy2(path, path.with_suffix(path.suffix + ".bak"))
 
 
-# What a person looks at first: what it is, how hard it has been used, and
-# whether it is roadworthy. Everything else is true but not what you read an ad
-# for, and goes below the photos.
-HEADLINE_FACTS = (
-    ("mileage", "km", "{:,} km"),
-    ("first registration", "first_reg_date", None),
-    ("power", "hp", "{} PS"),
-    ("displacement", "ccm", "{} ccm"),
-    ("HU until", "inspection_until", None),
-    ("previous owners", "owners", None),
-    ("condition", "condition", None),
-    ("type", "bike_type", None),
-    ("final drive", "drive_type", None),
+# Every listing shows the same rows in the same order, whether or not the ad
+# filled them in. A field that silently disappears when it is empty makes two
+# listings impossible to compare, and hides the fact that the ad never said.
+#
+# (label, column, format, what to say when it is not there)
+SPECIFICATIONS = (
+    ("price", "price_eur", "{:,} €", "no price given"),
+    ("mileage", "km", "{:,} km", "not stated"),
+    ("first registration", "first_reg_date", None, "not stated"),
+    ("power", "hp", "{} PS", "not stated"),
+    ("displacement", "ccm", "{} ccm", "not stated"),
+    ("type", "bike_type", None, "not stated"),
+    ("final drive", "drive_type", None, "not stated"),
+    ("transmission", "transmission", None, "not stated"),
+    ("previous owners", "owners", None, "not stated"),
+    ("condition", "condition", None, "not stated"),
+    ("HU until", "inspection_until", None, "not stated"),
+    ("equipment", "equipment_json", None, "not listed"),
 )
 
-OTHER_FACTS = (
-    ("make", "make", None),
-    ("model", "model", None),
-    ("model year", "model_year", None),
-    ("colour", "color", None),
-    ("fuel", "fuel_type", None),
-    ("transmission", "transmission", None),
-    ("service history", "full_service_hist", None),
-    ("damaged", "damaged", None),
-    ("plate", "plate", None),
-    ("season", "plate_season", None),
-    ("seller", "seller_type", None),
-    ("seller name", "seller_name", None),
-    ("location", "location", None),
-    ("postcode", "postcode", None),
-    ("posted", "posted_at", None),
-    ("views", "view_count", None),
-    ("first seen", "first_seen_at", None),
-    ("last seen", "last_seen_at", None),
-    ("search", "search_name", None),
+MISCELLANEOUS = (
+    ("make", "make", None, "not stated"),
+    ("model", "model", None, "not stated"),
+    ("model year", "model_year", None, "not stated"),
+    ("colour", "color", None, "not stated"),
+    ("fuel", "fuel_type", None, "not stated"),
+    ("service history", "full_service_hist", None, "not stated"),
+    ("damaged", "damaged", None, "not stated"),
+    ("licence plate", "plate", None, "not read"),
+    ("seasonal registration", "plate_season", None, "not a seasonal plate"),
+    ("seller", "seller_type", None, "not stated"),
+    ("seller name", "seller_name", None, "not stated"),
+    ("location", "location", None, "not stated"),
+    ("posted", "posted_at", None, "not stated"),
+    ("views", "view_count", None, "not stated"),
+    ("first seen", "first_seen_at", None, "-"),
+    ("last seen", "last_seen_at", None, "-"),
+    ("search", "search_name", None, "-"),
 )
+
+YES_NO = {"full_service_hist", "damaged"}
 
 
 def _format(row, column, template):
     value = row[column] if column in row.keys() else None
     if value is None or value == "":
         return None
+    if column in YES_NO:
+        return "yes" if value else "no"
     if template:
         return template.format(value).replace(",", ".")
     return value
 
 
-def _pairs(row, spec):
-    return [(label, _format(row, column, template))
-            for label, column, template in spec
-            if _format(row, column, template) is not None]
+def _unparsed(row) -> dict[str, str]:
+    """Raw attributes whose column stayed empty, keyed by that column.
 
-
-def _headline_facts(row) -> list:
-    return _pairs(row, HEADLINE_FACTS)
-
-
-def _other_facts(row) -> list:
-    """Everything else typed, plus whatever the page said that we never mapped.
-
-    That second part is the point of keeping the raw attributes at all: a label
-    appearing here is one the parser does not understand yet.
+    An ad that says "HU: Neu" has said something about the HU. Reporting the
+    column as "not stated" would be a second way of losing it - so the row shows
+    what the ad actually said, and that it was not a date.
     """
-    known = _pairs(row, OTHER_FACTS)
     raw = json.loads(row["attributes_json"] or "{}")
     columns = set(row.keys())
-    unused = []
+    out = {}
     for label, value in raw.items():
         column = parse_fields.mapped_column(label)
-        # Not understood at all, or understood but unusable - "HU: Neu" is a
-        # real answer that is not a date, and dropping it from the page would
-        # lose the only thing the ad said about the TUEV.
-        if column is None or (column in columns and row[column] in (None, "")):
-            unused.append((label, value))
+        if column and column in columns and row[column] in (None, ""):
+            out.setdefault(column, value)
+    return out
+
+
+def _rows(row, spec) -> list[tuple[str, str, bool]]:
+    """(label, what to show, whether that is a value or an apology)."""
+    unparsed = _unparsed(row)
+    out = []
+    for label, column, template, missing in spec:
+        value = _format(row, column, template)
+        if value is None and column in unparsed:
+            out.append((label, f"{unparsed[column]} — not a usable value", True))
+            continue
+        out.append((label, value if value is not None else missing, value is None))
+    return out
+
+
+def _specifications(row) -> list:
+    rows = _rows(row, SPECIFICATIONS)
+    if row["price_kind"] == "vb" and not rows[0][2]:
+        label, text, absent = rows[0]
+        rows[0] = (label, f"{text} VB", absent)      # Verhandlungsbasis: negotiable
+    equipment = derived.equipment(row)
+    if equipment:
+        rows[-1] = ("equipment", ", ".join(equipment), False)
+    return rows
+
+
+def _derived_rows(worked_out: dict, home_plz: str | None) -> list:
+    """The same figures for every listing, and why one is missing when it is.
+
+    "cannot be worked out" rather than "not stated": the ad may well have said
+    it, we just have not got what it takes to compute the number.
+    """
+    months = worked_out["hu_months_left"]
+    drop = worked_out["price_drop"]
+    days = worked_out["days_on_market"]
+    km = worked_out["km_per_year"]
+
+    return [
+        ("km per year",
+         f"{km:,}".replace(",", ".") if km is not None else
+         "cannot be worked out - needs mileage and a registration date", km is None),
+        ("age", f"{worked_out['age_years']} years" if worked_out["age_years"] is not None
+         else "cannot be worked out - no registration date",
+         worked_out["age_years"] is None),
+        ("HU remaining",
+         ("expired " + f"{-months} month(s) ago" if months is not None and months < 0
+          else f"{months} month(s)") if months is not None
+         else "cannot be worked out - no HU date",
+         months is None),
+        ("distance from home",
+         f"≈ {worked_out['distance_km']} km" if worked_out["distance_km"] is not None
+         else ("cannot be worked out - set home_plz in the config" if not home_plz
+               else "cannot be worked out - the listing has no usable postcode"),
+         worked_out["distance_km"] is None),
+        ("on the market", f"{days} day(s)" if days is not None
+         else "cannot be worked out - no posting date", days is None),
+        ("price change",
+         f"cut by {drop[0]} € ({drop[1]}%) since it went up" if drop
+         else "unchanged since it went up", not drop),
+        ("photos", str(worked_out["photo_count"]), False),
+    ]
+
+
+def _miscellaneous(row) -> tuple[list, list]:
+    """The rest of the typed fields, and whatever the page said that we could
+    not use - either because the label is unknown or the value would not parse.
+
+    That second list is the point of keeping the raw attributes at all: a label
+    turning up there is one the parser does not understand yet.
+    """
+    known = _rows(row, MISCELLANEOUS)
+    raw = json.loads(row["attributes_json"] or "{}")
+    # Only labels with no field anywhere. One that maps to a column is already
+    # in a fixed row above - showing what the ad said, if it would not parse -
+    # and listing it again here is the duplication this panel was split to end.
+    unused = [(label, value) for label, value in raw.items()
+              if parse_fields.mapped_column(label) is None]
     return known, unused
 
 

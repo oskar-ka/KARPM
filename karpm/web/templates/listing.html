@@ -35,10 +35,12 @@
 {# 1. What the ad says, and what the model made of it. #}
 <div class="cols">
   <div class="panel">
-    <h2>{{ '{:,}'.format(row.price_eur).replace(',', '.') if row.price_eur else 'no price' }} €
-      {% if row.price_kind == 'vb' %}<small>VB</small>{% endif %}</h2>
+    <h2>specifications</h2>
     <dl class="kv">
-      {% for label, value in facts %}<dt>{{ label }}</dt><dd>{{ value }}</dd>{% endfor %}
+      {% for label, value, absent in specifications %}
+        <dt>{{ label }}</dt>
+        <dd class="{{ 'absent' if absent }}">{{ value }}</dd>
+      {% endfor %}
     </dl>
   </div>
 
@@ -78,38 +80,14 @@
 
 {# 3. Nothing here was read off the page: it is worked out from what was. #}
 <div class="panel">
-  <h2>worked out</h2>
+  <h2>derived figures</h2>
   <dl class="kv derived">
-    {% if derived.km_per_year %}
-      <dt>km per year</dt>
-      <dd>{{ '{:,}'.format(derived.km_per_year).replace(',', '.') }}
-        {% if derived.km_per_year < 1500 %}<span class="tag warn">little used - standing
-          wears a bike too</span>{% endif %}</dd>
-    {% endif %}
-    {% if derived.age_years %}<dt>age</dt><dd>{{ derived.age_years }} years</dd>{% endif %}
-    {% if derived.hu_months_left is not none %}
-      <dt>HU remaining</dt>
-      <dd>{% if derived.hu_months_left < 0 %}<span class="bad-text">expired
-            {{ -derived.hu_months_left }} month(s) ago</span>
-          {% else %}{{ derived.hu_months_left }} month(s){% endif %}</dd>
-    {% endif %}
-    {% if derived.distance_km is not none %}
-      <dt>distance</dt><dd>≈ {{ derived.distance_km }} km from home</dd>
-    {% endif %}
-    {% if derived.days_on_market is not none %}
-      <dt>on the market</dt><dd>{{ derived.days_on_market }} day(s)</dd>
-    {% endif %}
-    {% if derived.price_drop %}
-      <dt>price cut</dt>
-      <dd>{{ derived.price_drop[0] }} € ({{ derived.price_drop[1] }}%) since it went up</dd>
-    {% endif %}
-    <dt>photos</dt><dd>{{ derived.photo_count }}</dd>
-    {% if derived.equipment %}
-      <dt>equipment</dt><dd>{{ derived.equipment | join(', ') }}</dd>
-    {% endif %}
+    {% for label, value, absent in figures %}
+      <dt>{{ label }}</dt>
+      <dd class="{{ 'absent' if absent }}">{{ value }}</dd>
+    {% endfor %}
   </dl>
-  <p class="note">Worked out from the stored fields, not read off the page.
-    Anything that cannot be worked out is left off rather than shown as zero.</p>
+  <p class="note">Worked out from the stored fields, not read off the page.</p>
 </div>
 
 <div class="panel">
@@ -117,21 +95,24 @@
   <pre class="description">{{ row.description }}</pre>
 </div>
 
-{# 4. Everything else: the rest of the typed fields, then whatever the page
-      said that the parser does not understand yet. #}
+{# 4. The rest of the typed fields, then whatever the page said that we could
+      not use - which is how a new Kleinanzeigen attribute gets noticed. #}
 <div class="cols">
   <div class="panel">
-    <h2>everything else</h2>
-    {% set known, unmapped = rest %}
+    <h2>miscellaneous figures</h2>
+    {% set known, unused = misc %}
     <dl class="kv">
-      {% for label, value in known %}<dt>{{ label }}</dt><dd>{{ value }}</dd>{% endfor %}
+      {% for label, value, absent in known %}
+        <dt>{{ label }}</dt>
+        <dd class="{{ 'absent' if absent }}">{{ value }}</dd>
+      {% endfor %}
     </dl>
-    {% if unmapped %}
+    {% if unused %}
       <h3>not understood</h3>
-      <p class="note">On the page, but with no field of their own yet - which is
-        how a new Kleinanzeigen attribute gets noticed.</p>
+      <p class="note">On the page, but with no field of their own - either the
+        label is new, or the value would not parse.</p>
       <dl class="kv">
-        {% for label, value in unmapped %}<dt>{{ label }}</dt><dd>{{ value }}</dd>{% endfor %}
+        {% for label, value in unused %}<dt>{{ label }}</dt><dd>{{ value }}</dd>{% endfor %}
       </dl>
     {% endif %}
     {% if row.parse_warnings and row.parse_warnings != '[]' %}

@@ -344,14 +344,22 @@ is just running any command — existing rows and their history are preserved.
 A row holds two different things, and the listing page and the scoring prompt
 both keep them apart.
 
+The listing page shows them as three panels — **specifications**, **derived
+figures**, **miscellaneous figures** — and the first two show the same rows for
+every listing, whether or not the ad filled them in. A row that vanishes when it
+is empty makes two listings impossible to compare, and hides the fact that the
+ad never said. A specification that is missing says "not stated"; a derived
+figure says what it would have needed.
+
 **Read off the page** are the typed columns and `attributes_json`. The typed
 columns are what can be sorted and filtered on; `attributes_json` is the raw
 `{label: value}` capture behind them, kept so that a label Kleinanzeigen starts
-emitting is noticed rather than dropped. A raw attribute is shown only when it
-did *not* end up in a field — because the parser does not know the label, or
-because the value would not parse. `parse.fields.is_mapped()` decides that, and
-both the page and the prompt call it, which is what keeps them from drifting
-apart as they once did.
+emitting is noticed rather than dropped. A raw attribute is listed separately only when it has no field at all;
+`parse.fields.mapped_column()` decides that, and the page and the prompt share
+it, which is what keeps them from drifting apart as they once did. When a label
+*does* map somewhere but its value would not parse, the field's own row shows
+what the ad said — "HU: Neu" appears against `HU until`, not as "not stated",
+because the ad did say something and reporting otherwise loses it twice.
 
 **Worked out** is `karpm/derived.py`: km per year, age, months of HU left, days
 on the market, the total price cut, distance from `home_plz`. None of it needs
