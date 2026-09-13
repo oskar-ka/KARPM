@@ -1,35 +1,46 @@
 {% extends "base.html" %}
+{% from "_fields.html" import row %}
 {% block body %}
 <h1>searches</h1>
-<p class="sub">Build a search in your browser with the filters you want, then paste the URL
-  here. Name the model: ads carry a <em>Marke</em> but no <em>Modell</em>, and without it
-  listings cannot be grouped into price comparables.</p>
+<p class="sub">Each search is one Kleinanzeigen URL with your filters already applied.
+  They live in the same <code>config.toml</code> as everything else, under
+  <code>[[searches]]</code>; the rest of it is on the
+  <a href="{{ url_for('config_page') }}">config page</a>.</p>
 
 <form method="post" action="{{ url_for('save_searches') }}">
-  <table class="dense searches">
-    <tr><th>on</th><th>name</th><th>url</th><th>make</th><th>model</th><th>max ads</th></tr>
-    {% for s in searches %}
-    <tr>
-      <td><input type="checkbox" name="enabled-{{ loop.index0 }}" value="1"
-                 {{ 'checked' if s.enabled }}></td>
-      <td><input name="name-{{ loop.index0 }}" value="{{ s.name }}" required></td>
-      <td><input name="url-{{ loop.index0 }}" value="{{ s.url }}" class="wide" required></td>
-      <td><input name="make-{{ loop.index0 }}" value="{{ s.make or '' }}"></td>
-      <td><input name="model-{{ loop.index0 }}" value="{{ s.model or '' }}"></td>
-      <td><input name="max_ads-{{ loop.index0 }}" value="{{ s.max_ads or '' }}" size="5"></td>
-    </tr>
+  <div id="searches">
+    {% for values in rows %}
+      {% set index = loop.index0 %}
+      <section class="panel search">
+        <h2>{{ values.name or 'search' }}</h2>
+        {% for spec in fields %}
+          {{ row(spec, spec.key ~ '-' ~ index, values[spec.key],
+                 errors.get(spec.key ~ '-' ~ index)) }}
+        {% endfor %}
+        <p class="remove">
+          <button type="button" class="link" data-remove>remove this search</button></p>
+      </section>
     {% endfor %}
-    {% set next = searches | length %}
-    <tr class="new">
-      <td><input type="checkbox" name="enabled-{{ next }}" value="1" checked></td>
-      <td><input name="name-{{ next }}" placeholder="new search"></td>
-      <td><input name="url-{{ next }}" class="wide" placeholder="https://www.kleinanzeigen.de/s-…"></td>
-      <td><input name="make-{{ next }}"></td>
-      <td><input name="model-{{ next }}"></td>
-      <td><input name="max_ads-{{ next }}" size="5"></td>
-    </tr>
-  </table>
-  <p><button>save searches</button>
-     <span class="muted">clearing a name and url removes that row</span></p>
+  </div>
+
+  <p><button type="button" id="add-search">add search</button></p>
+
+  <div class="actions">
+    <button class="primary">save</button>
+    <a class="button" href="{{ url_for('searches') }}">cancel</a>
+    <span class="muted">the daemon rereads this on its next cycle</span>
+  </div>
 </form>
+
+{# Cloned by karpm.js for "add search"; INDEX is replaced with the next number. #}
+<template id="search-template">
+  <section class="panel search">
+    <h2>new search</h2>
+    {% for spec in fields %}
+      {{ row(spec, spec.key ~ '-INDEX', true if spec.kind == 'bool' else '', none) }}
+    {% endfor %}
+    <p class="remove">
+      <button type="button" class="link" data-remove>remove this search</button></p>
+  </section>
+</template>
 {% endblock %}

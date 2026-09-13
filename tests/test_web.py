@@ -5,6 +5,7 @@ pipeline, so the templates are rendered with the shapes they get in practice.
 """
 
 import json
+import re
 
 import pytest
 
@@ -237,31 +238,172 @@ def test_preferences_are_saved_with_a_backup(client, app):
     assert "A cheap MT-07." in prefs.with_suffix(".md.bak").read_text(encoding="utf-8")
 
 
-def test_config_is_saved(client, app):
+def form(client, overrides=None):
+    """The config form as the page would submit it, with a few values changed.
+
+    Posting a partial form is not how a browser behaves, and a field left out
+    reads as blank, so tests build the whole thing from what the page shows.
+    """
+    from karpm.web import fields
+    page = client.get("/config").get_data(as_text=True)
+    data = {}
+    for section in fields.SECTIONS:
+        for spec in section.fields:
+            name = fields.input_name(section.name, spec.key)
+            if spec.kind == "bool":
+                if re.search(rf'id="{re.escape(name)}"[^>]*checked', page):
+                    data[name] = "1"
+            else:
+                data[name] = _shown(page, name)
+    data.update(overrides or {})
+    return data
+
+
+def _shown(page, name):
+    """The value the rendered page is carrying for one field."""
+    for pattern in (rf'id="{re.escape(name)}"[^>]*value="([^"]*)"',
+                    rf'id="{re.escape(name)}"[^>]*>([^<]*)</textarea>',
+                    rf'id="{re.escape(name)}".*?<option value="([^"]*)" selected'):
+        found = re.search(pattern, page, re.S)
+        if found:
+            return found.group(1).replace("&#34;", '"').replace("&amp;", "&")
+    return ""
+
+
+def test_the_config_page_has_a_field_for_every_setting(client):
+    from karpm.web import fields
+    page = client.get("/config").get_data(as_text=True)
+    for section in fields.SECTIONS:
+        for spec in section.fields:
+            assert f'id="{fields.input_name(section.name, spec.key)}"' in page, spec.key
+
+
+def test_the_config_page_shows_the_current_values(client):
+    page = client.get("/config").get_data(as_text=True)
+    assert _shown(page, "web__port") == "8080"
+    assert _shown(page, "scoring__effort") == "medium"
+
+
+def test_saving_changes_one_value(client, app):
     _, config_path, _ = app
-    text = config_path.read_text(encoding="utf-8").replace("port = 8080", "port = 9090")
-    assert client.post("/config", data={"text": text}).status_code == 302
-    assert load_config(config_path).web.port == 9090
+    assert client.post("/config", data=form(client, {"web__port": "9090"})
+                       ).status_code == 302
+    conf = load_config(config_path)
+    assert conf.web.port == 9090
+    # And nothing else moved.
+    assert conf.scrape.min_delay_s == 4.0
+    assert conf.searches[0].name == "mt07"
 
 
-def test_broken_toml_is_never_written(client, app):
+def test_saving_keeps_the_comments_in_the_file(client, app):
+    """config.toml is a file people write in; a save must not flatten it."""
+    _, config_path, _ = app
+    config_path.write_text(
+        config_path.read_text(encoding="utf-8").replace(
+            "[web]", "# how the web UI binds\n[web]"), encoding="utf-8")
+    client.post("/config", data=form(client, {"web__port": "9090"}))
+    assert "# how the web UI binds" in config_path.read_text(encoding="utf-8")
+
+
+def test_a_checkbox_turns_a_setting_off(client, app):
+    _, config_path, _ = app
+    data = form(client)
+    assert data.get("images__enabled") == "1"
+    data.pop("images__enabled")          # an unchecked box sends nothing at all
+    client.post("/config", data=data)
+    assert load_config(config_path).images.enabled is False
+
+
+def test_a_number_field_given_words_is_rejected_beside_the_field(client, app):
     _, config_path, _ = app
     before = config_path.read_text(encoding="utf-8")
-    resp = client.post("/config", data={"text": "this is not [ toml"})
+    resp = client.post("/config", data=form(client, {"scrape__min_delay_s": "soon"}))
     assert resp.status_code == 200
-    assert b"not valid TOML" in resp.get_data()
+    body = resp.get_data(as_text=True)
+    assert "is not a number" in body
+    assert "nothing was saved" in body
+    assert "scrape.min_delay_s" in body
     assert config_path.read_text(encoding="utf-8") == before
 
 
-def test_valid_toml_that_is_not_a_usable_config_is_rolled_back(client, app):
-    """The dangerous case: it parses, so only loading it catches the mistake."""
+def test_a_rejected_save_comes_back_with_what_was_typed(client):
+    """Losing a page of edits to one typo would be its own bug."""
+    resp = client.post("/config", data=form(client, {"scrape__min_delay_s": "soon",
+                                                     "web__host": "0.0.0.0"}))
+    page = resp.get_data(as_text=True)
+    assert _shown(page, "web__host") == "0.0.0.0"
+    assert _shown(page, "scrape__min_delay_s") == "soon"
+
+
+def test_a_required_field_cannot_be_emptied(client, app):
     _, config_path, _ = app
     before = config_path.read_text(encoding="utf-8")
-    resp = client.post("/config", data={
-        "text": before.replace('dir = "', 'dir = 42  # "')})
-    assert resp.status_code == 200
-    assert b"rolled back" in resp.get_data()
+    resp = client.post("/config", data=form(client, {"db_path": ""}))
+    assert b"cannot be empty" in resp.get_data()
     assert config_path.read_text(encoding="utf-8") == before
+
+
+def test_an_optional_field_left_blank_falls_back_to_the_default(client, app):
+    """Blank is not an empty string - the key is removed, so the default applies."""
+    _, config_path, _ = app
+    client.post("/config", data=form(client, {"images__max_per_listing": ""}))
+    text = config_path.read_text(encoding="utf-8")
+    assert "max_per_listing" not in text
+    assert load_config(config_path).images.max_per_listing == 12
+
+
+def test_a_list_field_is_edited_a_line_at_a_time(client, app):
+    _, config_path, _ = app
+    client.post("/config", data=form(client, {
+        "email__to_addresses": "me@example.com\nyou@example.com",
+        "schedule__scrape_at": "06:00\n18:00"}))
+    conf = load_config(config_path)
+    assert conf.email.to_addresses == ["me@example.com", "you@example.com"]
+    assert conf.schedule.scrape_at == ["06:00", "18:00"]
+
+
+def test_retry_delays_are_edited_as_a_comma_separated_list(client, app):
+    _, config_path, _ = app
+    client.post("/config", data=form(client, {"scrape__retry_delays_s": "1, 2, 4.5"}))
+    assert load_config(config_path).scrape.retry_delays_s == [1.0, 2.0, 4.5]
+
+
+def test_a_choice_outside_its_options_is_refused(client, app):
+    _, config_path, _ = app
+    before = config_path.read_text(encoding="utf-8")
+    resp = client.post("/config", data=form(client, {"scoring__effort": "maximum"}))
+    assert b"must be one of" in resp.get_data()
+    assert config_path.read_text(encoding="utf-8") == before
+
+
+def test_a_file_that_would_not_load_is_never_written(app):
+    """The last line of defence, tested directly: the candidate is loaded from a
+    temporary file, so a rejected save never touches the real one."""
+    from karpm.web.app import _write_checked
+    _, config_path, _ = app
+    before = config_path.read_text(encoding="utf-8")
+
+    with pytest.raises(ValueError):
+        _write_checked(config_path, before.replace("port = 8080", 'port = "wrong"'))
+
+    assert config_path.read_text(encoding="utf-8") == before
+    assert not config_path.with_suffix(".toml.candidate").exists()
+
+
+def test_a_file_that_loads_is_written_with_a_backup(app):
+    from karpm.web.app import _write_checked
+    _, config_path, _ = app
+    before = config_path.read_text(encoding="utf-8")
+    _write_checked(config_path, before.replace("port = 8080", "port = 9191"))
+    assert load_config(config_path).web.port == 9191
+    assert config_path.with_suffix(".toml.bak").read_text(encoding="utf-8") == before
+
+
+def test_quotes_in_a_value_do_not_break_the_file(client, app):
+    _, config_path, _ = app
+    client.post("/config", data=form(client, {"email__subject_prefix": '[a "b" c]'}))
+    assert load_config(config_path).email.subject_prefix == '[a "b" c]'
+
 
 
 # --- status --------------------------------------------------------------
@@ -352,3 +494,179 @@ def test_a_search_added_in_the_ui_appears_on_the_dashboard(client, app):
         "name-1": "z900", "url-1": "https://example.com/z900", "enabled-1": "1",
     })
     assert b"z900" in client.get("/").get_data()
+
+
+# --- the searches page ---------------------------------------------------
+
+def search_form(client, overrides=None):
+    """The searches form as the page would submit it."""
+    from karpm.web import fields
+    page = client.get("/searches").get_data(as_text=True)
+    data = {}
+    index = 0
+    while f'id="name-{index}"' in page:
+        for spec in fields.SEARCH_FIELDS:
+            name = f"{spec.key}-{index}"
+            if spec.kind == "bool":
+                if re.search(rf'id="{name}"[^>]*checked', page):
+                    data[name] = "1"
+            else:
+                data[name] = _shown(page, name)
+        index += 1
+    data.update(overrides or {})
+    return data
+
+
+def test_the_searches_page_has_a_field_for_every_search_setting(client):
+    from karpm.web import fields
+    page = client.get("/searches").get_data(as_text=True)
+    for spec in fields.SEARCH_FIELDS:
+        assert f'id="{spec.key}-0"' in page, spec.key
+    # And the template the "add search" button clones.
+    assert 'id="search-template"' in page
+    assert "name-INDEX" in page
+
+
+def test_editing_a_search(client, app):
+    _, config_path, _ = app
+    client.post("/searches/save", data=search_form(client, {"model-0": "MT-09"}))
+    conf = load_config(config_path)
+    assert conf.searches[0].model == "MT-09"
+    assert conf.searches[0].name == "mt07"
+
+
+def test_adding_a_search(client, app):
+    """What the add button produces: one more block, numbered after the rest."""
+    _, config_path, _ = app
+    client.post("/searches/save", data=search_form(client, {
+        "name-1": "z900", "url-1": "https://example.com/z900", "enabled-1": "1",
+        "make-1": "Kawasaki", "model-1": "Z900", "max_ads-1": "50"}))
+    conf = load_config(config_path)
+    assert [s.name for s in conf.searches] == ["mt07", "z900"]
+    assert conf.searches[1].max_ads == 50
+
+
+def test_removing_a_search_leaves_a_gap_in_the_numbering(client, app):
+    """The browser drops the block, so the indexes that arrive are not contiguous."""
+    _, config_path, _ = app
+    data = search_form(client, {"name-1": "z900", "url-1": "https://example.com/z900"})
+    client.post("/searches/save", data=data)
+    assert len(load_config(config_path).searches) == 2
+
+    remaining = {k: v for k, v in search_form(client).items() if not k.endswith("-0")}
+    client.post("/searches/save", data=remaining)
+    assert [s.name for s in load_config(config_path).searches] == ["z900"]
+
+
+def test_a_search_without_a_url_is_refused_rather_than_dropped(client, app):
+    """Half-filled is a mistake to point at, not a row to quietly discard."""
+    _, config_path, _ = app
+    before = config_path.read_text(encoding="utf-8")
+    resp = client.post("/searches/save", data=search_form(client, {"name-1": "half"}))
+    assert b"cannot be empty" in resp.get_data()
+    assert config_path.read_text(encoding="utf-8") == before
+
+
+def test_an_entirely_empty_block_is_just_ignored(client, app):
+    _, config_path, _ = app
+    resp = client.post("/searches/save", data=search_form(client, {
+        "name-1": "", "url-1": "", "make-1": "", "model-1": "", "max_ads-1": ""}))
+    assert resp.status_code == 302
+    assert [s.name for s in load_config(config_path).searches] == ["mt07"]
+
+
+def test_two_searches_cannot_share_a_name(client, app):
+    """They are keyed by name in the database, so a duplicate would merge them."""
+    _, config_path, _ = app
+    before = config_path.read_text(encoding="utf-8")
+    resp = client.post("/searches/save", data=search_form(client, {
+        "name-1": "mt07", "url-1": "https://example.com/other"}))
+    assert b"cannot share a name" in resp.get_data()
+    assert config_path.read_text(encoding="utf-8") == before
+
+
+def test_max_ads_given_words_is_refused(client, app):
+    _, config_path, _ = app
+    before = config_path.read_text(encoding="utf-8")
+    resp = client.post("/searches/save", data=search_form(client, {"max_ads-0": "lots"}))
+    assert b"not a whole number" in resp.get_data()
+    assert config_path.read_text(encoding="utf-8") == before
+
+
+def test_saving_searches_leaves_the_rest_of_the_config_alone(client, app):
+    _, config_path, _ = app
+    client.post("/searches/save", data=search_form(client, {"model-0": "MT-09"}))
+    conf = load_config(config_path)
+    assert conf.web.port == 8080
+    assert conf.scoring.enabled is False
+    assert str(conf.images.dir).endswith("images")
+
+
+# --- a save touches only what changed ------------------------------------
+
+def test_saving_an_untouched_form_changes_nothing(client, app):
+    """Submitting the form without editing anything must be a no-op on disk,
+    not a rewrite of every line into its canonical spelling."""
+    _, config_path, _ = app
+    before = config_path.read_text(encoding="utf-8")
+    assert client.post("/config", data=form(client)).status_code == 302
+    assert config_path.read_text(encoding="utf-8") == before
+
+
+def test_a_setting_left_at_its_default_is_not_written_out(client, app):
+    """The form shows defaults for keys the file does not set. Saving must not
+    turn all of them into explicit lines."""
+    _, config_path, _ = app
+    assert "user_agent" not in config_path.read_text(encoding="utf-8")
+    client.post("/config", data=form(client, {"web__port": "9090"}))
+    text = config_path.read_text(encoding="utf-8")
+    assert "user_agent" not in text
+    assert "port = 9090" in text
+
+
+def test_an_integer_typed_into_a_float_field_is_left_alone(client, app):
+    """30 and 30.0 are the same setting; rewriting one as the other is churn."""
+    _, config_path, _ = app
+    config_path.write_text(config_path.read_text(encoding="utf-8")
+                           + "\ntimeout_s = 30\n", encoding="utf-8")
+    # (appended to the last table, which is [web] - fine, we only care that the
+    # value is unchanged by a save elsewhere)
+    before = config_path.read_text(encoding="utf-8")
+    client.post("/config", data=form(client))
+    assert config_path.read_text(encoding="utf-8") == before
+
+
+def test_only_the_edited_line_moves(client, app):
+    """Editing a key the file already has rewrites that line and no other."""
+    _, config_path, _ = app
+    before = config_path.read_text(encoding="utf-8").splitlines()
+    client.post("/config", data=form(client, {"web__port": "9090"}))
+    after = config_path.read_text(encoding="utf-8").splitlines()
+    assert len(after) == len(before)
+    changed = [(a, b) for a, b in zip(before, after) if a != b]
+    assert changed == [("port = 8080", "port = 9090")]
+
+
+def test_a_setting_the_file_lacks_is_added_as_one_line(client, app):
+    """And a key that is not in the file yet costs exactly one new line."""
+    _, config_path, _ = app
+    before = config_path.read_text(encoding="utf-8").splitlines()
+    assert not any(line.startswith("max_images") for line in before)
+    client.post("/config", data=form(client, {"scoring__max_images": "5"}))
+    after = config_path.read_text(encoding="utf-8").splitlines()
+    assert len(after) == len(before) + 1
+    assert set(after) - set(before) == {"max_images = 5"}
+
+
+def test_the_error_banner_names_the_fields(client):
+    """A long page of settings needs to say which one is wrong."""
+    resp = client.post("/config", data=form(client, {"web__port": "eighty",
+                                                     "scoring__max_images": "two"}))
+    banner = resp.get_data(as_text=True)
+    assert "check scoring.max_images, web.port" in banner
+
+
+def test_the_searches_banner_counts_from_one(client):
+    """"url-0" is how the form is wired; it is not what to show a person."""
+    resp = client.post("/searches/save", data=search_form(client, {"url-0": ""}))
+    assert "search 1: url" in resp.get_data(as_text=True)

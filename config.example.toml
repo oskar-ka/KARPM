@@ -5,26 +5,31 @@ db_path = "data/karpm.db"
 # Build each search in your browser: filter by make, model, radius, price,
 # whatever you like, then paste the resulting URL here. The scraper paginates
 # from this URL, so the filters are yours to control.
-[[searches]]
-name = "yamaha-mt07"
-url = "https://www.kleinanzeigen.de/s-motorraeder-roller/yamaha-mt-07/k0c305"
-enabled = true
-# Optional cap on how many ads to take from this search. Leave it out to take
-# the whole thing; pages are walked until the cap is met, so there is no
-# separate page limit.
-# max_ads = 100
-# Ads list a "Marke" but no "Modell", so name the model this search targets.
-# Listings are grouped by it to build the price comparables that the scoring
-# prompt uses to judge value for money - leave it out and every listing is
-# scored with "no comparable listings in the database".
-make = "Yamaha"
-model = "MT-07"
+#
+#   max_ads   Optional cap on how many ads to take. Leave it out to take the
+#             whole search; pages are walked until the cap is met, so there is
+#             no separate page limit.
+#   model     Ads list a "Marke" but no "Modell", so name the model this search
+#             targets. Listings are grouped by it to build the price comparables
+#             the scoring prompt uses to judge value for money - leave it out
+#             and every listing is scored with "no comparable listings in the
+#             database".
+#
+# The web UI edits these on its searches page. Because it regenerates the whole
+# block, keep notes of your own above them rather than between the settings.
 
 # [[searches]]
 # name = "yamaha-mt07-berlin"
 # url = "https://www.kleinanzeigen.de/s-motorraeder-roller/berlin/yamaha-mt-07/k0c305l3331r50"
 # make = "Yamaha"
 # model = "MT-07"
+
+[[searches]]
+name = "yamaha-mt07"
+url = "https://www.kleinanzeigen.de/s-motorraeder-roller/yamaha-mt-07/k0c305"
+enabled = true
+make = "Yamaha"
+model = "MT-07"
 
 [scrape]
 # Deliberately slow. Two runs a day at this rate is a few hundred requests -

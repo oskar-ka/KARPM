@@ -163,8 +163,13 @@ journalctl -u karpm -f
 
 `karpm web` serves a page with the daemon's status, a sortable and filterable
 table of every listing, a page per listing with its photos, price history and
-scores, and editors for the searches, `preferences.md` and `config.toml`.
-Buttons queue a scrape, a digest or a re-score, and pause the schedule.
+scores, and forms for the searches, `preferences.md` and every setting in
+`config.toml` — a field each, with a note on what it does. Buttons queue a
+scrape, a digest or a re-score, and pause the schedule.
+
+Settings are edited on the line they already occupy in `config.toml`, so the
+comments you have written there survive a save, and a value that would stop
+KARPM from starting is refused before anything is written.
 
 It is a separate process that shares only the database with the daemon, so the
 UI holds no privilege the daemon has, and restarting either one leaves the other

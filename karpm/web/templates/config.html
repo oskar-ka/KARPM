@@ -1,11 +1,29 @@
 {% extends "base.html" %}
+{% from "_fields.html" import row %}
 {% block body %}
 <h1>config</h1>
-<p class="sub">Checked as TOML and loaded as a config before it is written; if either fails
-  nothing changes. The previous version is kept as <code>{{ path.name }}.bak</code>.</p>
+<p class="sub">Everything in <code>{{ path.name }}</code> except the searches, which have
+  <a href="{{ url_for('searches') }}">their own page</a>. Saved only if the whole file still
+  loads as a config KARPM can use; if it does not, nothing is written. Comments in the file
+  are left alone, and the previous version is kept as <code>{{ path.name }}.bak</code>.</p>
+
 <form method="post">
-  <textarea name="text" rows="34" spellcheck="false" class="mono">{{ text }}</textarea>
-  <p><button>save</button>
-     <span class="muted">the daemon rereads this on its next cycle</span></p>
+  {% for section in sections %}
+  <section class="panel">
+    <h2>{{ section.title }}</h2>
+    {% if section.blurb %}<p class="sub">{{ section.blurb }}</p>{% endif %}
+    {% for spec in section.fields %}
+      {% set name = input_name(section.name, spec.key) %}
+      {{ row(spec, name, values[name], errors.get(name)) }}
+    {% endfor %}
+  </section>
+  {% endfor %}
+
+  <div class="actions">
+    <button class="primary">save</button>
+    <a class="button" href="{{ url_for('dashboard') }}">cancel</a>
+    <span class="muted">the daemon rereads this on its next cycle; the port needs a
+      restart of <code>karpm web</code></span>
+  </div>
 </form>
 {% endblock %}

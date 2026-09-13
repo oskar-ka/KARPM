@@ -11,11 +11,7 @@ from pathlib import Path
 from flask import (Flask, abort, flash, redirect, render_template, request,
                    send_file, url_for)
 
-try:                                    # tomllib is stdlib from Python 3.11
-    import tomllib
-except ModuleNotFoundError:             # pragma: no cover - 3.10 (Raspberry Pi OS)
-    import tomli as tomllib
-
+from . import fields, tomledit
 from .. import db
 from ..config import Config, load_config
 
@@ -29,6 +25,9 @@ def create_app(config_path: str = "config.toml") -> Flask:
     app.config["KARPM_CONFIG_PATH"] = config_path
     # Only used for flash messages; this app has no login and no user data.
     app.secret_key = "karpm-local"
+
+    # The template builds field names the same way the parser reads them.
+    app.jinja_env.globals["input_name"] = fields.input_name
 
     @app.template_filter("fromjson")
     def _fromjson(value):
@@ -154,34 +153,29 @@ def create_app(config_path: str = "config.toml") -> Flask:
 
     @app.route("/searches")
     def searches():
-        return render_template("searches.html", searches=conf().searches)
+        return render_template("searches.html", fields=fields.SEARCH_FIELDS,
+                               rows=[_search_row(s) for s in conf().searches],
+                               errors={})
 
     @app.post("/searches/save")
     def save_searches():
         """Rewrite the [[searches]] tables from the submitted form."""
-        entries = []
-        for index in sorted({int(k.split("-")[1]) for k in request.form
-                             if k.startswith("name-")}):
-            name = (request.form.get(f"name-{index}") or "").strip()
-            url = (request.form.get(f"url-{index}") or "").strip()
-            if not name or not url:
-                continue
-            entry = {"name": name, "url": url,
-                     "enabled": request.form.get(f"enabled-{index}") == "1"}
-            for field in ("make", "model"):
-                value = (request.form.get(f"{field}-{index}") or "").strip()
-                if value:
-                    entry[field] = value
-            max_ads = (request.form.get(f"max_ads-{index}") or "").strip()
-            if max_ads.isdigit():
-                entry["max_ads"] = int(max_ads)
-            entries.append(entry)
+        rows, errors = _parse_search_form(request.form)
+        if errors:
+            flash(_needs_fixing(errors), "error")
+            return render_template("searches.html", fields=fields.SEARCH_FIELDS,
+                                   rows=rows, errors=errors)
 
+        path = Path(app.config["KARPM_CONFIG_PATH"])
+        entries = [{spec.key: row[spec.key] for spec in fields.SEARCH_FIELDS
+                    if row[spec.key] not in (None, "")} for row in rows]
         try:
-            _rewrite_searches(app.config["KARPM_CONFIG_PATH"], entries)
-        except (OSError, ValueError) as exc:
-            flash(f"could not save: {exc}", "error")
-            return redirect(url_for("searches"))
+            _write_checked(path, tomledit.set_searches(
+                path.read_text(encoding="utf-8"), entries))
+        except (ValueError, OSError) as exc:
+            flash(f"rejected, nothing was changed: {exc}", "error")
+            return render_template("searches.html", fields=fields.SEARCH_FIELDS,
+                                   rows=rows, errors={})
         conn = connect()
         try:
             db.sync_searches(conn, conf().searches)
@@ -211,31 +205,203 @@ def create_app(config_path: str = "config.toml") -> Flask:
     @app.route("/config")
     def config_page():
         path = Path(app.config["KARPM_CONFIG_PATH"])
-        return render_template("config.html", text=path.read_text(encoding="utf-8"),
-                               path=path)
+        return render_template("config.html", path=path,
+                               sections=fields.SECTIONS,
+                               values=_current_values(conf()), errors={})
 
     @app.post("/config")
     def save_config():
         path = Path(app.config["KARPM_CONFIG_PATH"])
-        text = request.form.get("text", "")
-        try:
-            tomllib.loads(text)             # valid TOML...
-        except tomllib.TOMLDecodeError as exc:
-            flash(f"not valid TOML, nothing was written: {exc}", "error")
-            return render_template("config.html", text=text, path=path)
+        parsed, errors, blanks = _parse_config_form(request.form)
+        if errors:
+            # Nothing is written; the page comes back with what was typed and
+            # the problem beside the field it is in.
+            flash(_needs_fixing(errors), "error")
+            return render_template("config.html", path=path, sections=fields.SECTIONS,
+                                   values=_submitted_values(request.form), errors=errors)
 
-        _backup(path)
-        path.write_text(text, encoding="utf-8")
+        updates, removals = _only_changed(parsed, blanks, conf())
+        text = path.read_text(encoding="utf-8")
+        text = tomledit.remove_keys(text, removals)
+        text = tomledit.set_values(text, updates)
         try:
-            load_config(path)               # ...and a config KARPM can use
-        except Exception as exc:
-            _restore(path)
-            flash(f"config rejected and rolled back: {exc}", "error")
-            return render_template("config.html", text=text, path=path)
+            _write_checked(path, text)
+        except (ValueError, OSError) as exc:
+            flash(f"rejected, nothing was changed: {exc}", "error")
+            return render_template("config.html", path=path, sections=fields.SECTIONS,
+                                   values=_submitted_values(request.form), errors={})
         flash("config saved - the daemon rereads it on its next cycle", "ok")
         return redirect(url_for("config_page"))
 
     return app
+
+
+def _needs_fixing(errors: dict) -> str:
+    """Name the fields, so nothing has to be hunted for down a long page."""
+    names = [_readable(name) for name in errors]
+    shown = ", ".join(names[:6]) + (f" and {len(names) - 6} more" if len(names) > 6 else "")
+    return f"nothing was saved - check {shown}"
+
+
+def _readable(name: str) -> str:
+    """"scrape__min_delay_s" -> "scrape.min_delay_s"; "url-0" -> "search 1: url"."""
+    key, _, index = name.rpartition("-")
+    if key and index.isdigit():
+        return f"search {int(index) + 1}: {key}"
+    return name.replace("__", ".")
+
+
+def _write_checked(path: Path, text: str) -> None:
+    """Write config.toml only if the result is a config KARPM can actually use.
+
+    The candidate is loaded from a temporary file first, so a rejected save
+    never touches the real one - there is nothing to roll back.
+    """
+    candidate = path.with_suffix(path.suffix + ".candidate")
+    candidate.write_text(text, encoding="utf-8")
+    try:
+        load_config(candidate)
+    except Exception as exc:
+        raise ValueError(str(exc)) from exc
+    finally:
+        candidate.unlink(missing_ok=True)
+    _backup(path)
+    path.write_text(text, encoding="utf-8")
+
+
+def _current_values(conf: Config) -> dict:
+    """The value of every form field, as it is now, keyed "section.key"."""
+    values = {}
+    for section in fields.SECTIONS:
+        holder = conf if section.name == "" else getattr(conf, section.name)
+        for spec in section.fields:
+            values[fields.input_name(section.name, spec.key)] = _as_form_text(
+                spec, getattr(holder, spec.key, None))
+    return values
+
+
+def _submitted_values(form) -> dict:
+    """What the user typed, so a rejected save comes back with their edits."""
+    values = {}
+    for section in fields.SECTIONS:
+        for spec in section.fields:
+            name = fields.input_name(section.name, spec.key)
+            values[name] = (form.get(name) == "1" if spec.kind == "bool"
+                            else form.get(name, ""))
+    return values
+
+
+def _as_form_text(spec, value):
+    if spec.kind == "bool":
+        return bool(value)
+    if value is None:
+        return ""
+    if spec.kind == "lines":
+        return "\n".join(str(v) for v in value)
+    if spec.kind == "numbers":
+        return ", ".join(_trim_float(v) for v in value)
+    if spec.kind == "float":
+        return _trim_float(value)
+    return str(value)
+
+
+def _trim_float(value) -> str:
+    """4.0 reads better as "4" in a form field; 0.5 has to stay 0.5."""
+    text = repr(float(value))
+    return text[:-2] if text.endswith(".0") else text
+
+
+def _parse_config_form(form) -> tuple[dict, dict, dict]:
+    """Read the form into TOML-ready values.
+
+    Returns the values to write, the per-field errors, and the optional fields
+    left blank - those have their key removed so the built-in default applies,
+    which is not the same as writing an empty string.
+    """
+    parsed: dict[str, dict] = {}
+    errors: dict[str, str] = {}
+    blanks: dict[str, set] = {}
+
+    for section in fields.SECTIONS:
+        for spec in section.fields:
+            name = fields.input_name(section.name, spec.key)
+            if spec.kind == "bool":
+                parsed.setdefault(section.name, {})[spec.key] = form.get(name) == "1"
+                continue
+            raw = (form.get(name) or "").strip()
+            if not raw and spec.kind in ("lines", "numbers"):
+                # An empty list is a value in its own right: no recipients, no
+                # scheduled runs. Writing [] says that; removing the key would
+                # silently restore the default instead.
+                parsed.setdefault(section.name, {})[spec.key] = []
+                continue
+            if not raw:
+                if spec.optional:
+                    blanks.setdefault(section.name, set()).add(spec.key)
+                else:
+                    errors[name] = "this cannot be empty"
+                continue
+            try:
+                parsed.setdefault(section.name, {})[spec.key] = _coerce(spec, raw)
+            except ValueError as exc:
+                errors[name] = str(exc)
+    return parsed, errors, blanks
+
+
+def _only_changed(parsed: dict, blanks: dict, conf: Config) -> tuple[dict, dict]:
+    """Narrow a whole submitted form down to the values that actually differ.
+
+    Without this, every save rewrites every line: a `4` typed into a float field
+    comes back as `4.0`, and a setting left at its default gets written out
+    explicitly the first time the form is submitted. Both are correct and both
+    are noise in a file the owner reads.
+    """
+    updates: dict[str, dict] = {}
+    removals: dict[str, set] = {}
+    for section in fields.SECTIONS:
+        holder = conf if section.name == "" else getattr(conf, section.name)
+        for spec in section.fields:
+            now = getattr(holder, spec.key, None)
+            if spec.key in blanks.get(section.name, ()):
+                if now is not None:
+                    removals.setdefault(section.name, set()).add(spec.key)
+                continue
+            new = parsed.get(section.name, {}).get(spec.key)
+            # 30 and 30.0 are the same setting; bool must not equal 1.
+            same = (now == new and isinstance(now, bool) == isinstance(new, bool))
+            if not same:
+                updates.setdefault(section.name, {})[spec.key] = new
+    return updates, removals
+
+
+def _coerce(spec, raw: str):
+    if spec.kind == "int":
+        try:
+            return int(raw)
+        except ValueError:
+            raise ValueError(f"{raw!r} is not a whole number") from None
+    if spec.kind == "float":
+        try:
+            return float(raw)
+        except ValueError:
+            raise ValueError(f"{raw!r} is not a number") from None
+    if spec.kind == "numbers":
+        out = []
+        for part in (p.strip() for p in raw.replace("\n", ",").split(",")):
+            if not part:
+                continue
+            try:
+                out.append(float(part))
+            except ValueError:
+                raise ValueError(f"{part!r} is not a number") from None
+        return out
+    if spec.kind == "lines":
+        return [line.strip() for line in raw.splitlines() if line.strip()]
+    if spec.kind == "choice":
+        if raw not in spec.choices:
+            raise ValueError(f"must be one of {', '.join(spec.choices)}")
+        return raw
+    return raw
 
 
 def _backup(path: Path) -> None:
@@ -243,52 +409,45 @@ def _backup(path: Path) -> None:
         shutil.copy2(path, path.with_suffix(path.suffix + ".bak"))
 
 
-def _restore(path: Path) -> None:
-    backup = path.with_suffix(path.suffix + ".bak")
-    if backup.exists():
-        shutil.copy2(backup, path)
+def _search_row(search) -> dict:
+    return {spec.key: _as_form_text(spec, getattr(search, spec.key, None))
+            for spec in fields.SEARCH_FIELDS}
 
 
-def _rewrite_searches(config_path, entries: list[dict]) -> None:
-    """Replace the [[searches]] tables, leaving the rest of the file untouched.
+def _parse_search_form(form) -> tuple[list[dict], dict]:
+    """Read the repeated search blocks. A row with no name and no url is gone."""
+    rows, errors = [], {}
+    indexes = sorted({int(key.rsplit("-", 1)[1]) for key in form
+                      if key.startswith("name-") and key.rsplit("-", 1)[1].isdigit()})
+    position = 0
+    for index in indexes:
+        raw = {spec.key: (form.get(f"{spec.key}-{index}") or "").strip()
+               for spec in fields.SEARCH_FIELDS if spec.kind != "bool"}
+        if not raw["name"] and not raw["url"]:
+            continue                    # an empty row is how you delete one
+        row = {"enabled": form.get(f"enabled-{index}") == "1"}
+        for spec in fields.SEARCH_FIELDS:
+            if spec.kind == "bool":
+                continue
+            value = raw[spec.key]
+            if not value:
+                if not spec.optional:
+                    errors[f"{spec.key}-{position}"] = "this cannot be empty"
+                row[spec.key] = None
+                continue
+            try:
+                row[spec.key] = _coerce(spec, value)
+            except ValueError as exc:
+                errors[f"{spec.key}-{position}"] = str(exc)
+                row[spec.key] = value
+        rows.append(row)
+        position += 1
 
-    The file is edited as text rather than re-serialised, so comments and
-    formatting elsewhere survive.
-    """
-    path = Path(config_path)
-    original = path.read_text(encoding="utf-8")
-    lines, kept, skipping = original.splitlines(), [], False
-    for line in lines:
-        stripped = line.strip()
-        if stripped.startswith("[[searches]]"):
-            skipping = True
-            continue
-        if skipping and stripped.startswith("[") and not stripped.startswith("[["):
-            skipping = False
-        if not skipping:
-            kept.append(line)
-
-    rendered = []
-    for entry in entries:
-        rendered.append("[[searches]]")
-        rendered.append(f'name = "{_toml_escape(entry["name"])}"')
-        rendered.append(f'url = "{_toml_escape(entry["url"])}"')
-        rendered.append(f"enabled = {str(entry['enabled']).lower()}")
-        for field in ("make", "model"):
-            if entry.get(field):
-                rendered.append(f'{field} = "{_toml_escape(entry[field])}"')
-        if entry.get("max_ads"):
-            rendered.append(f"max_ads = {entry['max_ads']}")
-        rendered.append("")
-
-    body = "\n".join(kept).rstrip() + "\n\n" + "\n".join(rendered)
-    tomllib.loads(body)                     # refuse to write something unreadable
-    _backup(path)
-    path.write_text(body, encoding="utf-8")
-
-
-def _toml_escape(value: str) -> str:
-    return value.replace("\\", "\\\\").replace('"', '\\"')
+    names = [row["name"] for row in rows if row["name"]]
+    for position, row in enumerate(rows):
+        if row["name"] and names.count(row["name"]) > 1:
+            errors[f"name-{position}"] = "two searches cannot share a name"
+    return rows, errors
 
 
 LIST_COLUMNS = [

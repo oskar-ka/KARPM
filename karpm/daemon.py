@@ -40,7 +40,14 @@ def _parse_times(values: list[str]) -> list[tuple[int, int]]:
     return sorted(times)
 
 
-def _next_fire(times: list[tuple[int, int]], after: datetime) -> datetime:
+def _next_fire(times: list[tuple[int, int]], after: datetime) -> datetime | None:
+    """When this fires next, or None if it is not scheduled at all.
+
+    An empty list is a real setting - it means the daemon only acts on what the
+    web UI queues - so it must not be an IndexError in the middle of the loop.
+    """
+    if not times:
+        return None
     for hour, minute in times:
         candidate = after.replace(hour=hour, minute=minute, second=0, microsecond=0)
         if candidate > after:
@@ -182,8 +189,9 @@ def run_forever(conf, conn, poll_seconds: int = 30, config_path: str | None = No
                     log.exception("digest failed")
                 break
 
-        db.set_state(conn, "next_scrape", _next_fire(scrape_times, datetime.now()).isoformat())
-        db.set_state(conn, "next_digest", _next_fire(digest_times, datetime.now()).isoformat())
+        for key, times in (("next_scrape", scrape_times), ("next_digest", digest_times)):
+            when = _next_fire(times, datetime.now())
+            db.set_state(conn, key, when.isoformat() if when else "not scheduled")
         _sleep(poll_seconds)
 
     stop_beating.set()

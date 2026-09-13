@@ -342,8 +342,8 @@ repeat a slot it already completed. Stops cleanly on `SIGTERM`/`SIGINT`.
 ## `web`
 
 Serve the web UI: the daemon's status, a sortable listings table, the photos and
-history behind each listing, and editors for the searches, `preferences.md` and
-`config.toml`.
+history behind each listing, and forms for the searches, `preferences.md` and
+every setting in `config.toml`.
 
 ```bash
 karpm web
@@ -368,11 +368,33 @@ or after whatever it is currently doing finishes.
 | `re-score everything` | The same, after deleting every existing score. Asks first, and costs a great deal more. |
 | `pause schedule` | Stops the timed slots firing. Queued commands still run, so the buttons keep working. |
 
-Edits to `config.toml` and the searches take effect without a restart — the
-daemon rereads its config every cycle. `config.toml` is only written if it
-parses as TOML *and* loads as a config KARPM can use; if it does not, the
-previous file is restored and the error is shown. A `.bak` is written beside
-any file it changes.
+### Editing the settings
+
+**Config** is a field per setting, grouped by the table it lives in, with the
+setting's name on the left and a note on what it does on the right. **Searches**
+is the same, one block per `[[searches]]` entry, with a button to add another
+and a link to remove one.
+
+Numbers are checked as numbers and choices against their options, so a typo is
+pointed at rather than saved; when anything is rejected nothing is written at
+all and the page comes back with what you typed. As a last check the whole file
+is loaded as a config before it replaces the real one, so a save that would stop
+KARPM from starting never lands.
+
+Values are edited on the line they already occupy, and only the ones you
+actually changed are touched, which means **the comments and layout in your
+`config.toml` survive a save**. A `.bak` is written beside any file the UI
+changes.
+
+Searches are the exception: a `[[searches]]` block is regenerated rather than
+edited line by line, since the form can add and remove them. Comments inside a
+block are kept, but they end up collected above the blocks rather than between
+the settings they were next to — so keep your own notes above the searches.
+
+A field that may be left blank says so in its note — blank removes the setting
+so its built-in default applies, which is not the same as an empty value. Edits
+take effect without a restart, since the daemon rereads its config every cycle;
+only `web.port` needs `karpm web` restarted.
 
 **There is no login.** Bound to `127.0.0.1` that is fine, because only the Pi
 itself can reach it. Reach it from a laptop with an SSH tunnel rather than by

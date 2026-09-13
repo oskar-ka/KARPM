@@ -1,0 +1,28 @@
+{# One row: label on the left, the control, then a note on the right. #}
+{% macro row(spec, name, value, error) %}
+<div class="field {{ 'bad' if error }}">
+  <label for="{{ name }}">{{ spec.key }}</label>
+  <div class="control">
+    {% if spec.kind == 'bool' %}
+      <input type="checkbox" id="{{ name }}" name="{{ name }}" value="1"
+             {{ 'checked' if value }}>
+    {% elif spec.kind == 'choice' %}
+      <select id="{{ name }}" name="{{ name }}">
+        {% for choice in spec.choices %}
+          <option value="{{ choice }}" {{ 'selected' if value == choice }}>{{ choice }}</option>
+        {% endfor %}
+      </select>
+    {% elif spec.kind == 'lines' %}
+      <textarea id="{{ name }}" name="{{ name }}" rows="3" spellcheck="false"
+                class="{{ 'wide' if spec.wide }}"
+                placeholder="{{ spec.placeholder }}">{{ value }}</textarea>
+    {% else %}
+      <input id="{{ name }}" name="{{ name }}" value="{{ value }}" spellcheck="false"
+             class="{{ 'wide' if spec.wide }}{{ ' short' if spec.kind in ('int', 'float') }}"
+             placeholder="{{ spec.placeholder }}">
+    {% endif %}
+    {% if error %}<p class="field-error">{{ error }}</p>{% endif %}
+  </div>
+  <p class="note">{{ spec.help }}</p>
+</div>
+{% endmacro %}
