@@ -10,7 +10,7 @@ from importlib import resources
 from pathlib import Path
 from typing import Any, Iterable
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 def utcnow() -> str:
@@ -33,11 +33,37 @@ def connect(db_path: str | Path) -> sqlite3.Connection:
     return conn
 
 
+# Columns added after v1. CREATE TABLE IF NOT EXISTS will not add a column to a
+# table that already exists, so existing databases need an explicit ALTER.
+MIGRATIONS = {
+    "listings": [
+        ("delisted_reason", "TEXT"),
+        ("missing_since", "TEXT"),
+        ("missing_count", "INTEGER NOT NULL DEFAULT 0"),
+        ("last_verified_at", "TEXT"),
+    ],
+}
+
+
 def init_db(conn: sqlite3.Connection) -> None:
     schema = resources.files("karpm").joinpath("schema.sql").read_text(encoding="utf-8")
+    # Migrate first: schema.sql recreates the listing_current view, which can
+    # only reference columns that already exist. On a fresh database every
+    # PRAGMA below returns nothing and this is a no-op.
+    _migrate(conn)
     conn.executescript(schema)
     conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
     conn.commit()
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    for table, columns in MIGRATIONS.items():
+        existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+        if not existing:
+            continue        # fresh database - schema.sql creates it complete
+        for name, spec in columns:
+            if name not in existing:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {spec}")
 
 
 def sync_searches(conn: sqlite3.Connection, searches: Iterable[Any]) -> None:
@@ -148,19 +174,50 @@ def add_history(
     )
 
 
-def mark_delisted(conn: sqlite3.Connection, seen_ids: set[str], search_name: str) -> int:
-    """Any active listing from this search we did not see is presumed gone."""
+def missing_listings(conn: sqlite3.Connection, seen_ids: set[str],
+                     search_name: str) -> list[sqlite3.Row]:
+    """Active listings of this search that were not in the results this run."""
     rows = conn.execute(
-        "SELECT id FROM listings WHERE is_active = 1 AND search_name = ?", (search_name,)
+        "SELECT * FROM listings WHERE is_active = 1 AND search_name = ?", (search_name,)
     ).fetchall()
-    gone = [r["id"] for r in rows if r["id"] not in seen_ids]
+    return [r for r in rows if r["id"] not in seen_ids]
+
+
+def record_missing(conn: sqlite3.Connection, listing_id: str) -> None:
+    """Note that a listing was absent from the search results this run."""
+    conn.execute(
+        "UPDATE listings SET missing_count = missing_count + 1, "
+        "missing_since = COALESCE(missing_since, ?) WHERE id = ?",
+        (utcnow(), listing_id),
+    )
+
+
+def clear_missing(conn: sqlite3.Connection, listing_id: str, verified: bool = False) -> None:
+    """The listing is present again - either in the results or on its own page."""
     now = utcnow()
-    for listing_id in gone:
-        conn.execute(
-            "UPDATE listings SET is_active = 0, delisted_at = ? WHERE id = ?", (now, listing_id)
-        )
-        add_history(conn, listing_id, "delisted")
-    return len(gone)
+    conn.execute(
+        "UPDATE listings SET missing_count = 0, missing_since = NULL, last_seen_at = ?, "
+        "last_verified_at = CASE WHEN ? THEN ? ELSE last_verified_at END WHERE id = ?",
+        (now, 1 if verified else 0, now, listing_id),
+    )
+
+
+def record_verification(conn: sqlite3.Connection, listing_id: str) -> None:
+    conn.execute(
+        "UPDATE listings SET last_verified_at = ? WHERE id = ?", (utcnow(), listing_id)
+    )
+
+
+def mark_delisted(conn: sqlite3.Connection, listing_id: str,
+                  reason: str = "verified_gone") -> None:
+    """Record that a listing is genuinely gone. Callers must have evidence."""
+    now = utcnow()
+    conn.execute(
+        "UPDATE listings SET is_active = 0, delisted_at = ?, delisted_reason = ?, "
+        "last_verified_at = ? WHERE id = ?",
+        (now, reason, now, listing_id),
+    )
+    add_history(conn, listing_id, "delisted", detail={"reason": reason})
 
 
 # --- images -----------------------------------------------------------------

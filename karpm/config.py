@@ -63,6 +63,17 @@ class ScrapeConfig:
     block_threshold: int = 3
     # Re-fetch the detail page of a known listing at most this often (hours).
     refresh_after_hours: int = 24
+    # A listing missing from the search results has its own page checked before
+    # being delisted. Turning this off falls back to assuming absence means
+    # gone, which is wrong often enough to lose live listings.
+    verify_delisting: bool = True
+    # Cap the extra requests one run will spend on those checks. Anything over
+    # the cap keeps its active status and is checked next run.
+    max_delist_checks: int = 25
+    # Don't re-check a listing that was confirmed live this recently (hours).
+    # A listing outside the search's price filter would otherwise be re-fetched
+    # every single run, forever.
+    recheck_missing_after_hours: int = 12
 
 
 @dataclass

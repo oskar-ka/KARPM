@@ -7,6 +7,7 @@ import pytest
 
 from karpm import db, scoring, trial
 from karpm.config import Config, SearchConfig
+from karpm.http import Page
 
 FIXTURES = Path(__file__).parent / "fixtures"
 SEARCH_URL = "https://www.kleinanzeigen.de/s-motorraeder-roller/bmw/k0c305"
@@ -32,16 +33,19 @@ class RealPageFetcher:
         self.search_html = search
 
     def get(self, url, referer=None, binary=False):
+        return self.fetch(url, referer=referer, binary=binary).content
+
+    def fetch(self, url, referer=None, binary=False):
         self.requested.append(url)
         if binary:
-            return b"\xff\xd8\xff" + b"0" * 64
+            return Page(b"\xff\xd8\xff" + b"0" * 64, url, 200)
         match = re.search(r"(\d{9,})", url)
         listing_id = match.group(1) if match else None
         if listing_id in DETAILS:
             if listing_id in self.broken:
-                return "<html><body>nothing</body></html>"
-            return (FIXTURES / DETAILS[listing_id]).read_text(encoding="utf-8")
-        return self.search_html
+                return Page("<html><body>nothing</body></html>", url, 200)
+            return Page((FIXTURES / DETAILS[listing_id]).read_text(encoding="utf-8"), url, 200)
+        return Page(self.search_html, url, 200)
 
 
 @pytest.fixture

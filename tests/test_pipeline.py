@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from karpm import db, pipeline
+from karpm.http import Page
 from karpm.config import Config, SearchConfig
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -23,7 +24,11 @@ class FakeFetcher:
     the change-detection tests would pass or fail for the wrong reason.
     """
 
-    def __init__(self, detail_html: str | None = None, prices: dict | None = None) -> None:
+    def __init__(self, detail_html: str | None = None, prices: dict | None = None,
+                 gone: set[str] | None = None, unreachable: set[str] | None = None) -> None:
+        # `gone` ads answer like a removed listing; `unreachable` ones fail to load.
+        self.gone = gone or set()
+        self.unreachable = unreachable or set()
         self.requested: list[str] = []
         self.detail_template = detail_html if detail_html is not None else (
             (FIXTURES / "detail_page.html").read_text(encoding="utf-8")
@@ -40,15 +45,25 @@ class FakeFetcher:
         return html.replace("2847612345", listing_id)
 
     def get(self, url, referer=None, binary=False):
+        return self.fetch(url, referer=referer, binary=binary).content
+
+    def fetch(self, url, referer=None, binary=False):
         self.requested.append(url)
         if binary:
-            return b"\xff\xd8\xff" + b"0" * 64          # a plausible JPEG header
+            return Page(b"\xff\xd8\xff" + b"0" * 64, url, 200)   # a plausible JPEG
         if "/s-anzeige/" in url:
-            listing_id = re.search(r"/(\d{9,})-", url)
-            return self.detail_for(listing_id.group(1) if listing_id else "2847612345")
+            listing_id = re.search(r"/(\d{9,})", url)
+            listing_id = listing_id.group(1) if listing_id else "2847612345"
+            if listing_id in self.gone:
+                # Kleinanzeigen bounces a removed ad to the category page.
+                return Page("<html><body>Motorräder</body></html>",
+                            "https://www.kleinanzeigen.de/s-motorraeder-roller/k0c305", 200)
+            if listing_id in self.unreachable:
+                raise RuntimeError("connection reset")
+            return Page(self.detail_for(listing_id), url, 200)
         if "seite:2" in url:
-            return "<html><body></body></html>"          # end of pagination
-        return self.search_html
+            return Page("<html><body></body></html>", url, 200)   # end of pagination
+        return Page(self.search_html, url, 200)
 
 
 @pytest.fixture
@@ -120,23 +135,108 @@ def test_price_change_is_recorded_in_history(conf, conn):
     assert db.get_listing(conn, "2847612345")["price_eur"] == 5400
 
 
-def test_disappearing_listing_is_marked_delisted(conf, conn):
+def _drop_from_results(fetcher, listing_id="2847698888"):
+    """Make the search results stop returning one ad, as Kleinanzeigen might."""
+    fetcher.search_html = re.sub(
+        r'<li class="ad-listitem">\s*<article class="aditem" data-adid="'
+        + listing_id + r'".*?</li>',
+        "", fetcher.search_html, flags=re.S)
+    return fetcher
+
+
+def test_listing_gone_from_results_is_verified_before_delisting(conf, conn):
+    """Absence from the search results is a hint, not proof."""
     pipeline.run_scrape(conf, conn, FakeFetcher())
 
-    fetcher = FakeFetcher()
-    # Second run: the cheap one is gone from the results.
-    fetcher.search_html = fetcher.search_html.replace("2847698888", "2847698888-REMOVED")
-    fetcher.search_html = fetcher.search_html.replace(
-        '<a class="ellipsis" href="/s-anzeige/mt07-unfall/2847698888-REMOVED-305-2074">', "<a>"
-    )
-    pipeline.run_scrape(conf, conn, fetcher)
+    # It vanished from the results, but its own page still shows the advert.
+    fetcher = _drop_from_results(FakeFetcher())
+    totals = pipeline.run_scrape(conf, conn, fetcher)
+
+    still_there = db.get_listing(conn, "2847698888")
+    assert still_there["is_active"] == 1, "a live listing must not be delisted"
+    assert still_there["delisted_at"] is None
+    assert totals["still_live"] == 1
+    assert totals["delisted"] == 0
+    assert any("2847698888" in u for u in fetcher.requested), "its page was never checked"
+
+
+def test_listing_is_delisted_once_its_page_confirms_it(conf, conn):
+    pipeline.run_scrape(conf, conn, FakeFetcher())
+
+    fetcher = _drop_from_results(FakeFetcher(gone={"2847698888"}))
+    totals = pipeline.run_scrape(conf, conn, fetcher)
 
     gone = db.get_listing(conn, "2847698888")
     assert gone["is_active"] == 0
     assert gone["delisted_at"] is not None
-    events = [r["event"] for r in conn.execute(
-        "SELECT event FROM listing_history WHERE listing_id = ?", ("2847698888",))]
-    assert "delisted" in events
+    assert gone["delisted_reason"] == "verified_gone"
+    assert totals["delisted"] == 1
+
+    history = conn.execute(
+        "SELECT * FROM listing_history WHERE listing_id = ? AND event = 'delisted'",
+        ("2847698888",)).fetchone()
+    assert history is not None
+    assert "verified_gone" in history["detail_json"]
+
+
+def test_unreachable_page_leaves_the_listing_active(conf, conn):
+    """An inconclusive check must never delist - try again next run."""
+    pipeline.run_scrape(conf, conn, FakeFetcher())
+
+    fetcher = _drop_from_results(FakeFetcher(unreachable={"2847698888"}))
+    totals = pipeline.run_scrape(conf, conn, fetcher)
+
+    row = db.get_listing(conn, "2847698888")
+    assert row["is_active"] == 1
+    assert row["delisted_at"] is None
+    assert totals["unverified"] == 1
+    assert row["missing_count"] == 1
+    assert row["missing_since"] is not None
+
+
+def test_missing_count_accumulates_across_runs(conf, conn):
+    pipeline.run_scrape(conf, conn, FakeFetcher())
+    for _ in range(3):
+        pipeline.run_scrape(conf, conn, _drop_from_results(FakeFetcher(
+            unreachable={"2847698888"})))
+
+    row = db.get_listing(conn, "2847698888")
+    assert row["missing_count"] == 3
+    assert row["is_active"] == 1, "still no evidence, so still active"
+
+
+def test_a_confirmed_live_listing_is_not_rechecked_immediately(conf, conn):
+    pipeline.run_scrape(conf, conn, FakeFetcher())
+    pipeline.run_scrape(conf, conn, _drop_from_results(FakeFetcher()))
+
+    second = _drop_from_results(FakeFetcher())
+    pipeline.run_scrape(conf, conn, second)
+
+    checks = [u for u in second.requested if "2847698888" in u]
+    assert checks == [], "verified live recently - should not be fetched again"
+
+
+def test_verification_can_be_switched_off(conf, conn):
+    conf.scrape.verify_delisting = False
+    pipeline.run_scrape(conf, conn, FakeFetcher())
+    pipeline.run_scrape(conf, conn, _drop_from_results(FakeFetcher()))
+
+    row = db.get_listing(conn, "2847698888")
+    assert row["is_active"] == 0
+    assert row["delisted_reason"] == "assumed"
+
+
+def test_check_budget_defers_the_rest_to_the_next_run(conf, conn):
+    conf.scrape.max_delist_checks = 0
+    pipeline.run_scrape(conf, conn, FakeFetcher())
+
+    fetcher = _drop_from_results(FakeFetcher(gone={"2847698888"}))
+    totals = pipeline.run_scrape(conf, conn, fetcher)
+
+    assert totals["unverified"] == 1
+    assert totals["delisted"] == 0
+    assert db.get_listing(conn, "2847698888")["is_active"] == 1
+    assert not [u for u in fetcher.requested if "2847698888" in u]
 
 
 def test_parse_failure_does_not_null_out_good_data(conf, conn):

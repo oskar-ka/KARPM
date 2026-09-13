@@ -32,6 +32,18 @@ block_threshold = 3
 # How often to re-open an ad we already know, to pick up edits (hours).
 refresh_after_hours = 24
 
+# When a listing stops appearing in the search results, open its own page to
+# find out whether it is really gone before delisting it. Ads drop out of
+# results for reasons that have nothing to do with being sold: the results are
+# re-ranked, pagination is capped by max_pages, and a price change can push an
+# ad outside the search's own price filter.
+verify_delisting = true
+# Extra requests one run will spend on those checks; the rest wait for the next
+# run and stay active meanwhile.
+max_delist_checks = 25
+# Skip re-checking a listing confirmed live within this many hours.
+recheck_missing_after_hours = 12
+
 [images]
 enabled = true
 dir = "data/images"

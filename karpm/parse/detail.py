@@ -272,3 +272,53 @@ def _view_count(soup) -> int | None:
         return None
     m = re.search(r"\d[\d.]*", node.get_text())
     return int(m.group(0).replace(".", "")) if m else None
+
+
+# Wording Kleinanzeigen uses when an ad no longer exists. These are only
+# consulted once the page has failed to parse as an ad - sellers write things
+# like "das Zubehör ist nicht mehr verfügbar" in perfectly live listings, and
+# matching on the raw text alone would delete them.
+GONE_MARKERS = (
+    "anzeige ist nicht mehr verfügbar",
+    "anzeige wurde gelöscht",
+    "anzeige ist leider nicht mehr",
+    "anzeige nicht gefunden",
+    "anzeige existiert nicht",
+    "diese anzeige wurde beendet",
+    "ad is no longer available",
+)
+
+LIVE = "live"
+GONE = "gone"
+UNKNOWN = "unknown"
+
+
+def classify_ad_page(html: str, final_url: str | None = None,
+                     expected_id: str | None = None) -> str:
+    """Decide whether an ad page shows a live listing, a removed one, or
+    something we cannot read.
+
+    Returns "live", "gone" or "unknown". "unknown" is the safe answer: callers
+    must not delist on it. Order matters - a page that parses as a real advert
+    is live no matter what phrases appear in the seller's own text.
+    """
+    data = parse_detail_page(html, final_url)
+    parsed_as_ad = bool(data.get("title")) and (
+        data.get("price_eur") is not None or data.get("description")
+    )
+
+    if parsed_as_ad:
+        # A redirect to a different ad would be someone else's listing.
+        if expected_id and data.get("id") and data["id"] != expected_id:
+            return UNKNOWN
+        return LIVE
+
+    # Not an advert. Were we bounced somewhere else entirely?
+    if final_url and "/s-anzeige/" not in final_url:
+        return GONE
+
+    lowered = html.lower()
+    if any(marker in lowered for marker in GONE_MARKERS):
+        return GONE
+
+    return UNKNOWN

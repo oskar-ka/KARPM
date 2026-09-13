@@ -115,3 +115,47 @@ def test_ads_do_not_carry_a_model_attribute(fixed):
     assert fixed["make"] == "BMW"
     assert fixed.get("model") is None
     assert "Modell" not in fixed["attributes_json"]
+
+
+# --- is this ad still there? -------------------------------------------------
+
+def test_a_real_ad_page_reads_as_live(fixed):
+    from karpm.parse.detail import LIVE, classify_ad_page
+    html = (FIXTURES / FIXED[0]).read_text(encoding="utf-8")
+    assert classify_ad_page(html, FIXED[1], expected_id="3422210980") == LIVE
+
+
+def test_seller_text_saying_nicht_mehr_verfuegbar_does_not_kill_a_live_ad():
+    """Sellers write "das Zubehör ist nicht mehr verfügbar" in live adverts;
+    matching the raw text alone would delist them."""
+    from karpm.parse.detail import LIVE, classify_ad_page
+    html = (FIXTURES / FIXED[0]).read_text(encoding="utf-8").replace(
+        "Verkaufe wegen Neuanschaffung",
+        "Diese Anzeige ist nicht mehr verfügbar für Tauschangebote. Verkaufe wegen Neuanschaffung")
+    assert classify_ad_page(html, FIXED[1], expected_id="3422210980") == LIVE
+
+
+def test_removed_ad_is_recognised():
+    from karpm.parse.detail import GONE, classify_ad_page
+    page = "<html><body><h1>Diese Anzeige ist nicht mehr verfügbar</h1></body></html>"
+    assert classify_ad_page(page, FIXED[1]) == GONE
+
+
+def test_redirect_away_from_the_ad_url_counts_as_gone():
+    from karpm.parse.detail import GONE, classify_ad_page
+    assert classify_ad_page(
+        "<html><body>Motorräder in Bayern</body></html>",
+        "https://www.kleinanzeigen.de/s-motorraeder-roller/k0c305") == GONE
+
+
+def test_an_unreadable_page_is_unknown_not_gone():
+    """Blocks and garbage must never be read as proof of deletion."""
+    from karpm.parse.detail import UNKNOWN, classify_ad_page
+    assert classify_ad_page("<html><body></body></html>", FIXED[1]) == UNKNOWN
+    assert classify_ad_page("<html><body>Sicherheitsabfrage</body></html>", FIXED[1]) == UNKNOWN
+
+
+def test_a_different_ad_at_the_same_url_is_unknown():
+    from karpm.parse.detail import UNKNOWN, classify_ad_page
+    html = (FIXTURES / FIXED[0]).read_text(encoding="utf-8")
+    assert classify_ad_page(html, FIXED[1], expected_id="9999999999") == UNKNOWN

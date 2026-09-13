@@ -77,11 +77,42 @@ regression degrades to stale data, never to data loss. Pinned by
 Each row also carries `parse_warnings`, so a markup change shows up *in the
 data* as `["missing:km"]` rather than silently becoming NULL.
 
-### Delisting is detected by elimination
+### Delisting requires evidence, not absence
 
-`mark_delisted()` takes the set of ad ids seen during a run and flags anything
-previously active for that search but absent now: `is_active = 0` plus a
-`delisted_at` timestamp. The row stays.
+An ad vanishing from the search results does **not** mean it was sold. Results
+get re-ranked, `max_pages` caps how deep the run goes, and a price change can
+push an ad outside the search's own price filter. Treating absence as deletion
+loses live listings.
+
+So absence only starts an investigation. `reconcile_missing()` fetches each
+missing listing's own page and classifies it:
+
+| Outcome | What it means | What happens |
+|---|---|---|
+| `gone` | 404, or a redirect away from `/s-anzeige/`, or a page that does not parse as an ad *and* says the ad was removed | `is_active = 0`, `delisted_reason = 'verified_gone'`, history row |
+| `live` | The page still parses as this advert | Stays active; the page in hand is stored, so a price change gets picked up |
+| `unknown` | Blocked, unreadable, network error, or a different ad at that URL | **Nothing.** Stays active, re-checked next run |
+
+Order matters in that classification: a page that parses as a real advert is
+live no matter what its text says. Sellers write "das Zubehör ist nicht mehr
+verfügbar" in perfectly live listings, and matching the raw text alone would
+delete them.
+
+Three columns track the state in between:
+
+| Column | Meaning |
+|---|---|
+| `missing_since` | First run in which it was absent from the results |
+| `missing_count` | How many consecutive runs it has been absent |
+| `last_verified_at` | Last time its own page was fetched to check |
+
+`recheck_missing_after_hours` stops a listing that is permanently outside the
+search filter from being re-fetched on every single run, and
+`max_delist_checks` caps how many of these extra requests one run may spend —
+anything over the cap keeps its active status and waits for the next run.
+
+Setting `verify_delisting = false` restores the old assume-it-is-gone
+behaviour, which records `delisted_reason = 'assumed'`.
 
 ## Scores
 
@@ -205,10 +236,27 @@ For the common questions there is no need to open the database at all —
 an SD card, and the database survives the Pi losing power mid-write. Foreign
 keys are on, so deleting a listing takes its images, history and scores with it.
 
+## Schema versions
+
+`PRAGMA user_version` records the schema version; `db.MIGRATIONS` lists columns
+added after v1 and `init_db()` applies any that a database is missing. Upgrading
+is just running any command — existing rows and their history are preserved.
+
+| Version | Change |
+|---|---|
+| 1 | Initial schema. |
+| 2 | `listings.delisted_reason`, `missing_since`, `missing_count`, `last_verified_at` — added with delisting verification. |
+
 ## Changing the schema
 
 `schema.sql` is applied with `CREATE TABLE IF NOT EXISTS` on every start, so
-adding a *new table* is free. Adding a *column to an existing table* needs an
-`ALTER TABLE` — `CREATE TABLE IF NOT EXISTS` will not do it for a table that
-already exists. The `listing_current` view is dropped and recreated on every
-init, so changing it only means editing `schema.sql`.
+adding a *new table* is free. Adding a *column to an existing table* needs two
+edits: the column in `schema.sql` (for fresh databases) **and** an entry in
+`db.MIGRATIONS` (for existing ones) — `CREATE TABLE IF NOT EXISTS` will not add
+a column to a table that already exists. Bump `SCHEMA_VERSION` and add a row to
+the table above.
+
+Migrations run *before* `schema.sql`, because `schema.sql` recreates the
+`listing_current` view and a view can only reference columns that already
+exist. The view is dropped and recreated on every init, so changing it only
+means editing `schema.sql`.

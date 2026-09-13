@@ -45,6 +45,13 @@ CREATE TABLE IF NOT EXISTS listings (
     last_seen_at      TEXT NOT NULL,
     is_active         INTEGER NOT NULL DEFAULT 1,
     delisted_at       TEXT,
+    delisted_reason   TEXT,                     -- verified_gone | assumed
+    -- Absence from search results is a hint, not proof: pagination caps,
+    -- re-ranking and the search's own price filter all make a live ad vanish
+    -- from the results. These track that state until its URL is checked.
+    missing_since     TEXT,
+    missing_count     INTEGER NOT NULL DEFAULT 0,
+    last_verified_at  TEXT,
     view_count        INTEGER,
 
     attributes_json   TEXT,                      -- every raw label/value pair we found

@@ -27,6 +27,12 @@ Every observation is compared against the stored row, so you also get **price
 drops, edits, time on market, and when a listing disappears** — which is the
 data that tells you what actually sells and at what price.
 
+A listing vanishing from the search results is not treated as proof it sold.
+Results get re-ranked, `max_pages` caps how deep a run goes, and a price change
+can push an ad outside the search's own price filter. So each missing listing
+has its own page fetched, and it is delisted only if that page confirms the ad
+is gone; anything inconclusive stays active and is re-checked next run.
+
 ## Setup
 
 Needs Python 3.10 or newer (3.10 is what Raspberry Pi OS / Ubuntu 22.04 ship).

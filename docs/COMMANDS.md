@@ -124,8 +124,16 @@ karpm scrape
 ```
 
 No options — it takes its searches, page limits and delays from the config.
-Unlike `trial` this writes to the **real** database and marks listings that
-have disappeared as delisted.
+Unlike `trial` this writes to the **real** database.
+
+A listing that stops appearing in the search results is not assumed to be sold:
+its own page is fetched, and it is only delisted if that page confirms the ad is
+gone. A listing that is still live but has dropped out of the results (re-ranked,
+below the `max_pages` cut, or pushed outside the search's price filter) stays
+active and gets refreshed from the page that was just fetched. Inconclusive
+checks change nothing and are retried next run. See `verify_delisting`,
+`max_delist_checks` and `recheck_missing_after_hours` in `config.toml`, and
+[`DATABASE.md`](DATABASE.md) for the detail.
 
 ---
 

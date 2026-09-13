@@ -12,6 +12,7 @@ import logging
 import random
 import re
 import time
+from typing import NamedTuple
 
 import requests
 
@@ -45,6 +46,14 @@ class Blocked(RuntimeError):
     """Raised when the site is clearly refusing us (403 / captcha wall)."""
 
 
+class Page(NamedTuple):
+    """A fetched page, plus where we actually landed after redirects."""
+
+    content: str | bytes
+    url: str
+    status: int
+
+
 class Fetcher:
     def __init__(self, cfg) -> None:
         self.cfg = cfg
@@ -70,6 +79,16 @@ class Fetcher:
 
     def get(self, url: str, *, referer: str | None = None, binary: bool = False):
         """Fetch a URL, returning text (or bytes). Raises on permanent failure."""
+        page = self.fetch(url, referer=referer, binary=binary)
+        return page.content
+
+    def fetch(self, url: str, *, referer: str | None = None, binary: bool = False) -> Page:
+        """Like get(), but also reports the URL we ended up at.
+
+        Kleinanzeigen answers a removed ad by redirecting to the category page
+        rather than serving a 404, so the final URL is part of the evidence
+        about whether a listing still exists.
+        """
         headers = {"Referer": referer} if referer else {}
         last_error: Exception | None = None
 
@@ -90,14 +109,14 @@ class Fetcher:
             if resp.status_code == 200:
                 if binary:
                     self.consecutive_blocks = 0
-                    return resp.content
+                    return Page(resp.content, resp.url, 200)
                 text = decode(resp)
                 if _looks_blocked(text):
                     self._register_block(url)
                     time.sleep(60 * (self.consecutive_blocks ** 2))
                     continue
                 self.consecutive_blocks = 0
-                return text
+                return Page(text, resp.url, 200)
 
             if resp.status_code in (403, 429, 503):
                 self._register_block(url)
