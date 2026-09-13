@@ -207,6 +207,8 @@ def scrape_search(conn, cfg, fetcher: Fetcher, search, mark_missing: bool = True
     stopped early never saw the whole search, so it must not draw conclusions
     from an ad's absence.
     """
+    global _short_dumps
+    _short_dumps = 0
     plan = classify_plan(conn, cfg, enumerate_search(cfg, fetcher, search, save_pages))
     log.info("[%s] plan:\n%s", search.name, describe_plan(plan, cfg))
 
@@ -251,10 +253,9 @@ def scrape_search(conn, cfg, fetcher: Fetcher, search, mark_missing: bool = True
         found = sum(f for _, _, f in short)
         log.warning(
             "%s ad(s) yielded fewer photos than their search listing advertised "
-            "(%s expected, %s found). The gallery markup may have changed - "
-            "`karpm probe --url %s` shows what the parser sees.",
-            len(short), expected, found,
-            next(iter(i["url"] for i in plan.to_fetch if i["id"] == short[0][0]), ""),
+            "(%s expected, %s found). Up to %s of those pages are saved in %s/ - "
+            "send one of those files.",
+            len(short), expected, found, SHORT_DUMP_BUDGET, cfg.scrape.dump_dir,
         )
     counts["photos_short"] = len(short)
 
@@ -274,6 +275,33 @@ def _fetch_and_store(conn, cfg, fetcher, item, search, referer=None) -> tuple[st
         log.info("listing %s is already gone (404)", item["id"])
         return "gone", None, 0
     return _store_detail(conn, cfg, html, item, search)
+
+
+# How many short-gallery pages one run will save before it stops bothering.
+SHORT_DUMP_BUDGET = 3
+_short_dumps = 0
+
+
+def _dump_short_gallery(cfg, listing_id, url, html, found, promised) -> str | None:
+    """Save an ad page that yielded fewer photos than its listing advertised.
+
+    Reasoning about why a page parsed badly, without the bytes that page
+    actually contained, has now been wrong twice. This keeps the evidence.
+    """
+    global _short_dumps
+    if _short_dumps >= SHORT_DUMP_BUDGET:
+        return None
+    try:
+        target = Path(cfg.scrape.dump_dir) / f"short_gallery_{listing_id}.html"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(
+            f"<!-- {url}\n     advertised {promised} photo(s), parsed {found} -->\n{html}",
+            encoding="utf-8")
+    except OSError as exc:
+        log.debug("could not save %s: %s", listing_id, exc)
+        return None
+    _short_dumps += 1
+    return str(target)
 
 
 def _store_detail(conn, cfg, html, item, search) -> tuple[str, str]:
@@ -304,6 +332,15 @@ def _store_detail(conn, cfg, html, item, search) -> tuple[str, str]:
 
     if data.get("parse_warnings"):
         log.debug("listing %s parse warnings: %s", data["id"], data["parse_warnings"])
+
+    promised = item.get("image_count")
+    cap = cfg.images.max_per_listing
+    if promised and len(image_urls) < min(promised, cap or promised):
+        saved = _dump_short_gallery(cfg, data["id"], item["url"], html,
+                                    len(image_urls), promised)
+        if saved:
+            log.warning("ad %s advertised %s photo(s) but only %s parsed - page saved to %s",
+                        data["id"], promised, len(image_urls), saved)
     return outcome, data["id"], len(image_urls)
 
 

@@ -249,6 +249,10 @@ def cmd_probe(args) -> int:
         if args.brief:
             data.pop("description", None)
         print(json.dumps(data, indent=2, ensure_ascii=False, default=str))
+        print("\nphotos offered by each source of this page:", file=sys.stderr)
+        from .parse.detail import image_sources
+        for source, count in image_sources(html, args.url or "").items():
+            print(f"   {count:>4}  {source}", file=sys.stderr)
         print(f"\nparse warnings: {data.get('parse_warnings')}", file=sys.stderr)
     else:
         result = parse_search_page(html, base_url=args.url or "https://www.kleinanzeigen.de")

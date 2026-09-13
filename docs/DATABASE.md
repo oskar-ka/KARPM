@@ -172,7 +172,9 @@ Anything inside an `article[data-adid]` is skipped — those are the "similar
 ads" cards showing other people's bikes.
 
 The search page states each ad's photo count on its thumbnail, so a run that
-finds far fewer on the ad page says so rather than quietly fetching a fraction.
+finds far fewer on the ad page says so rather than quietly fetching a fraction,
+and saves the first few such pages into `scrape.dump_dir` so the cause can be
+looked at rather than guessed at.
 
 **Renditions.** The CDN serves each photo under a `rule` naming a size and
 format: the gallery links `$_59.AUTO`, while the page's own JSON-LD links

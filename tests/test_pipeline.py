@@ -71,6 +71,7 @@ def conf(tmp_path):
     cfg = Config(db_path=str(tmp_path / "test.db"))
     cfg.searches = [SearchConfig(name="mt07", url=SEARCH_URL, )]
     cfg.images.dir = str(tmp_path / "images")
+    cfg.scrape.dump_dir = str(tmp_path / "debug")
     cfg.scoring.enabled = False
     cfg.email.enabled = False
     return cfg

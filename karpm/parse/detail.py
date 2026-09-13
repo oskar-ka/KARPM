@@ -242,6 +242,34 @@ def _tags(soup, known: dict[str, str]) -> list[str]:
     return tags
 
 
+def image_sources(html: str, base_url: str = BASE) -> dict:
+    """How many photos each source of an ad page offers, for diagnosis.
+
+    When an ad yields one photo instead of twenty, this says which source the
+    page actually populated - the gallery, its JSON-LD, or neither.
+    """
+    soup = _soup(html)
+    counts: dict = {}
+    gallery = [b for b, tag in _jsonld_with_tags(soup)
+               if b.get("@type") == "ImageObject"
+               and tag.find_parent("article", attrs={"data-adid": True}) is None]
+    counts["json-ld ImageObject"] = len(gallery)
+    counts["json-ld Product image"] = sum(
+        len([b["image"]] if isinstance(b.get("image"), str) else b.get("image") or [])
+        for b in _jsonld(soup)
+        if b.get("@type") in ("Product", "Offer", "Vehicle", "Motorcycle", "Car"))
+    for selector in IMAGE_SELECTORS:
+        nodes = [n for n in soup.select(selector)
+                 if n.find_parent("article", attrs={"data-adid": True}) is None]
+        with_src = [n for n in nodes
+                    if n.get("src") or n.get("data-imgsrc") or n.get("data-src")
+                    or n.get("content")]
+        counts[f"selector {selector}"] = len(with_src)
+    counts["meta og:image"] = len(soup.select("meta[property='og:image'][content]"))
+    counts["TOTAL collected"] = len(_images(soup, base_url))
+    return counts
+
+
 def _images(soup, base_url: str, seeded: list[str] | None = None) -> list[str]:
     """Every photo of this ad, from both places the page lists them.
 

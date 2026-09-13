@@ -45,6 +45,9 @@ retry_delays_s = [5, 10, 20, 40]
 timeout_s = 30.0
 max_retries = 3
 block_threshold = 3
+# Saved pages for diagnosis - block pages, and ad pages whose gallery came up
+# short - are written here.
+dump_dir = "data/debug"
 # How often to re-open an ad we already know, to pick up edits (hours).
 refresh_after_hours = 24
 

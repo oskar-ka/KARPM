@@ -72,8 +72,9 @@ class ScrapeConfig:
     block_threshold: int = 3
     # Base backoff after a suspected block; grows with the square of the count.
     block_backoff_s: int = 60
-    # Pages we refused to trust are written here so they can be inspected.
-    dump_dir: str = "data/blocked"
+    # Saved pages for diagnosis - block pages, and ad pages whose gallery
+    # came up short - are written here.
+    dump_dir: str = "data/debug"
 
     @property
     def image_delay_range(self) -> tuple[float, float]:

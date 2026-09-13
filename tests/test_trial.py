@@ -52,6 +52,7 @@ class RealPageFetcher:
 def conf(tmp_path):
     cfg = Config(db_path=str(tmp_path / "trial.db"))
     cfg.images.dir = str(tmp_path / "images")
+    cfg.scrape.dump_dir = str(tmp_path / "debug")
     cfg.scoring.enabled = False
     cfg.email.enabled = False
     return cfg
@@ -423,7 +424,11 @@ def test_an_ad_yielding_fewer_photos_than_advertised_is_warned_about(conf, conn,
 
     # the first ad's thumbnail advertises 40 photos; the page yields one
     assert "fewer photos than their search listing advertised" in caplog.text
-    assert "karpm probe --url" in caplog.text
+
+    saved = list(Path(conf.scrape.dump_dir).glob("short_gallery_*.html"))
+    assert saved, "the offending page must be kept, not just counted"
+    assert "advertised 40 photo(s), parsed 1" in saved[0].read_text(encoding="utf-8")
+    assert "viewad-title" in saved[0].read_text(encoding="utf-8"), "the page itself"
 
 
 def test_no_warning_when_the_gallery_is_all_there(conf, conn, caplog):

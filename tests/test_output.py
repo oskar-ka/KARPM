@@ -14,6 +14,7 @@ def populated(tmp_path):
     conf = Config(db_path=str(tmp_path / "test.db"))
     conf.searches = [SearchConfig(name="mt07", url=SEARCH_URL, )]
     conf.images.dir = str(tmp_path / "images")
+    conf.scrape.dump_dir = str(tmp_path / "debug")
     conf.scoring.enabled = False
     conf.email.enabled = False
     conn = db.connect(conf.db_path)
