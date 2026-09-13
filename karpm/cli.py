@@ -288,14 +288,14 @@ def cmd_trial(args) -> int:
     """
     conf = _apply_pace(load_config(args.config), args)
 
-    limit = None if (args.no_limit or args.all) else args.limit
-    pages = None if (args.all_pages or args.all) else args.pages
-    if args.all_images or args.all:
+    # How many ads to take is the only scope knob: pages are walked until that
+    # many are collected, or until the search runs out of them.
+    limit = None if args.all_ads else (5 if args.max_ads is None else args.max_ads)
+    if args.all_images:
         conf.images.max_per_listing = None
 
     if args.url:
-        search = SearchConfig(name="trial", url=args.url, make=args.make, model=args.model,
-                              max_pages=pages, max_listings=limit)
+        search = SearchConfig(name="trial", url=args.url, max_pages=None, max_listings=limit)
     else:
         try:
             configured = _search_by_name(conf, args.search, args.config)
@@ -303,7 +303,14 @@ def cmd_trial(args) -> int:
             print(exc, file=sys.stderr)
             return 2
         search = SearchConfig(**{**vars(configured),
-                                 "max_pages": pages, "max_listings": limit})
+                                 "max_pages": None, "max_listings": limit})
+
+    # --make/--model override whatever the search carries; passing them with
+    # --search used to be accepted and then quietly ignored.
+    if args.make:
+        search.make = args.make
+    if args.model:
+        search.model = args.model
 
     conf.db_path = args.db
     conf.images.dir = args.image_dir
@@ -318,11 +325,13 @@ def cmd_trial(args) -> int:
     conn = db.connect(conf.db_path)
     db.init_db(conn)
 
-    scope = (f"{limit} listing(s)" if limit is not None else "every listing") + ", " + \
-            (f"{pages} page(s)" if pages is not None else "every page")
+    scope = f"the first {limit} ad(s)" if limit is not None else "every ad in the search"
+    images = ("none" if not conf.images.enabled else
+              "every photo" if conf.images.max_per_listing is None else
+              f"up to {conf.images.max_per_listing} photo(s) per ad")
 
     print(f"Trial run: {search.url}")
-    print(f"  scope: {scope}")
+    print(f"  scope: {scope}; images: {images}")
     print(f"  pacing: {'testing' if _resolve_pace(args) else 'production'} - "
           f"{conf.scrape.min_delay_s:.1f}-{conf.scrape.max_delay_s:.1f}s between pages, "
           f"{conf.scrape.image_delay_range[0]:.1f}-"
@@ -425,7 +434,7 @@ def cmd_top(args) -> int:
     return 0
 
 
-def main(argv: list[str] | None = None) -> int:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="karpm", description=__doc__)
     parser.add_argument("-c", "--config", default="config.toml",
                         help="path to the config file (default: config.toml)")
@@ -494,17 +503,14 @@ def main(argv: list[str] | None = None) -> int:
     p_trial.add_argument("--url", help="search URL to try (otherwise use --search)")
     p_trial.add_argument("--search", default="trial",
                          help="name of a search from config.toml to try instead of --url")
-    p_trial.add_argument("--limit", type=int, default=5,
-                         help="stop after this many listings (default 5)")
-    p_trial.add_argument("--pages", type=int, default=1, help="max search pages (default 1)")
-    p_trial.add_argument("--no-limit", action="store_true",
-                         help="every ad on the pages walked, no listing cap")
-    p_trial.add_argument("--all-pages", action="store_true",
-                         help="follow pagination to the end instead of stopping at --pages")
-    p_trial.add_argument("--all-images", action="store_true",
-                         help="every photo per ad, ignoring images.max_per_listing")
-    p_trial.add_argument("--all", action="store_true",
-                         help="shorthand for --no-limit --all-pages --all-images")
+    ads = p_trial.add_mutually_exclusive_group()
+    ads.add_argument("--max-ads", "--max_ads", type=int, default=None, dest="max_ads",
+                     help="stop after this many ads, walking as many pages as that "
+                          "needs (default 5)")
+    ads.add_argument("--all-ads", "--all_ads", action="store_true", dest="all_ads",
+                     help="every ad in the search, to the last page")
+    p_trial.add_argument("--all-images", "--all_images", action="store_true", dest="all_images",
+                         help="every photo per ad; without it, images.max_per_listing applies")
     p_trial.add_argument("--db", default="data/trial.db", help="throwaway database path")
     p_trial.add_argument("--image-dir", default="data/trial_images",
                          help="where trial images are written (default: data/trial_images)")
@@ -529,6 +535,11 @@ def main(argv: list[str] | None = None) -> int:
                        help="maximum listings to show (default: 20)")
     p_top.set_defaults(func=cmd_top)
 
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
     args = parser.parse_args(argv)
     _setup_logging(args.verbose)
     if args.command == "probe" and not (args.url or args.file):

@@ -135,21 +135,49 @@ def _run_trial_capturing(monkeypatch, tmp_path, extra_argv):
     return captured
 
 
-def test_trial_defaults_to_a_capped_scope(monkeypatch, tmp_path):
+def test_trial_defaults_to_the_first_five_ads(monkeypatch, tmp_path):
     got = _run_trial_capturing(monkeypatch, tmp_path, ["--no-images"])
     assert got["search"].max_listings == 5
-    assert got["search"].max_pages == 1
+    assert got["search"].max_pages is None, "pages are walked until the ad limit is met"
 
 
-def test_no_limit_removes_the_listing_cap(monkeypatch, tmp_path):
-    got = _run_trial_capturing(monkeypatch, tmp_path, ["--no-limit", "--no-images"])
-    assert got["search"].max_listings is None
-    assert got["search"].max_pages == 1
-
-
-def test_all_pages_follows_pagination_to_the_end(monkeypatch, tmp_path):
-    got = _run_trial_capturing(monkeypatch, tmp_path, ["--all-pages", "--no-images"])
+def test_max_ads_sets_the_cap(monkeypatch, tmp_path):
+    got = _run_trial_capturing(monkeypatch, tmp_path, ["--max-ads", "40", "--no-images"])
+    assert got["search"].max_listings == 40
     assert got["search"].max_pages is None
+
+
+def test_max_ads_accepts_the_underscore_spelling(monkeypatch, tmp_path):
+    got = _run_trial_capturing(monkeypatch, tmp_path, ["--max_ads", "7", "--no-images"])
+    assert got["search"].max_listings == 7
+
+
+def test_all_ads_removes_the_cap(monkeypatch, tmp_path):
+    for flag in ("--all-ads", "--all_ads"):
+        got = _run_trial_capturing(monkeypatch, tmp_path, [flag, "--no-images"])
+        assert got["search"].max_listings is None
+        assert got["search"].max_pages is None
+
+
+@pytest.mark.parametrize("argv", [
+    ["trial", "--max-ads", "5", "--all-ads"],     # the value equals the default
+    ["trial", "--max-ads", "7", "--all-ads"],
+    ["trial", "--max_ads", "7", "--all_ads"],
+])
+def test_max_ads_and_all_ads_are_mutually_exclusive(argv):
+    """Parsed through the parser directly: a regression here used to let the
+    command through and make real requests."""
+    from karpm.cli import build_parser
+    with pytest.raises(SystemExit) as excinfo:
+        build_parser().parse_args(argv)
+    assert excinfo.value.code == 2
+
+
+def test_max_ads_default_is_resolved_in_code_not_by_argparse():
+    """argparse skips the exclusion check when a value equals its default, so
+    the default has to be None and applied afterwards."""
+    from karpm.cli import build_parser
+    assert build_parser().parse_args(["trial"]).max_ads is None
 
 
 def test_all_images_lifts_the_per_listing_cap(monkeypatch, tmp_path):
@@ -157,11 +185,17 @@ def test_all_images_lifts_the_per_listing_cap(monkeypatch, tmp_path):
     assert got["max_per_listing"] is None
 
 
-def test_all_is_shorthand_for_the_three(monkeypatch, tmp_path):
-    got = _run_trial_capturing(monkeypatch, tmp_path, ["--all"])
-    assert got["search"].max_listings is None
-    assert got["search"].max_pages is None
-    assert got["max_per_listing"] is None
+def test_without_all_images_the_configured_cap_applies(monkeypatch, tmp_path):
+    got = _run_trial_capturing(monkeypatch, tmp_path, [])
+    assert got["max_per_listing"] == 12
+
+
+def test_make_and_model_apply_when_using_a_named_search(monkeypatch, tmp_path):
+    """They used to be accepted alongside --search and then quietly ignored."""
+    captured = _run_trial_capturing(
+        monkeypatch, tmp_path, ["--make", "BMW", "--model", "R 1200 GS", "--no-images"])
+    assert captured["search"].make == "BMW"
+    assert captured["search"].model == "R 1200 GS"
 
 
 def test_trial_runs_at_the_testing_pace_but_polite_overrides(monkeypatch, tmp_path):

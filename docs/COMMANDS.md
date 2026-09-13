@@ -97,16 +97,13 @@ karpm trial --url "https://www.kleinanzeigen.de/s-motorraeder-roller/..." \
 |---|---|---|
 | `--url URL` | — | Search URL to try. Either this or `--search`. |
 | `--search NAME` | `trial` | Use a search already defined in `config.toml` instead of `--url`. |
-| `--limit N` | `5` | Stop after N listings. |
-| `--pages N` | `1` | Maximum search-result pages to walk. |
-| `--no-limit` | off | No listing cap — every ad on the pages walked. |
-| `--all-pages` | off | Follow pagination to the end instead of stopping at `--pages`. |
-| `--all-images` | off | Every photo per ad, ignoring `images.max_per_listing`. |
-| `--all` | off | Shorthand for `--no-limit --all-pages --all-images`. |
+| `--max-ads N` | `5` | Stop after N ads, walking as many pages as that needs. |
+| `--all-ads` | off | Every ad in the search, to the last page. |
+| `--all-images` | off | Every photo per ad. Without it, `images.max_per_listing` applies. |
 | `--db PATH` | `data/trial.db` | Throwaway database. Wiped at the start of each run unless `--keep`. |
 | `--image-dir PATH` | `data/trial_images` | Where trial images are written. |
-| `--make NAME` | — | Make to record on each listing, as in `config.toml`. |
-| `--model NAME` | — | Model to record. Ads carry no *Modell* attribute, so without this listings cannot be grouped into price comparables. |
+| `--make NAME` | — | Make to record on each listing. Overrides the search's own value. |
+| `--model NAME` | — | Model to record, overriding the search's. Ads carry no *Modell* attribute, so without this listings cannot be grouped into price comparables. |
 | `--no-images` | off | Skip image downloads (faster, fewer requests). |
 | `--keep` | off | Append to the trial database instead of starting clean. |
 | `--show-prompt` | off | Also print the scoring prompt for the first listing — without sending it. |
@@ -117,6 +114,13 @@ download failed; **1** otherwise, so it works as a cron healthcheck.
 The report separates two kinds of gap: **MISSING** means a field should have
 parsed and did not — a bug worth reporting; *not stated* means the site never
 provides it for these ads (motorcycle listings have no `owners` or `condition`).
+
+There is no page flag: pages are walked until the ad limit is met, or until the
+search runs out of ads. Every spelling is accepted both ways round
+(`--max-ads` / `--max_ads`). `--max-ads` and `--all-ads` cannot be combined.
+
+When a walk ends, it says why — the ad limit, a page limit from the config, the
+last page offering no next link, or a page that returned nothing parseable.
 
 **The search pages are read first, then the ads.** Walking the result pages
 costs a handful of requests and produces an exact plan before anything else is

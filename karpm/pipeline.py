@@ -41,6 +41,7 @@ class SearchPlan:
     skipped_wanted: int = 0
     duplicates: int = 0              # the same ad offered on more than one page
     truncated: bool = False          # we stopped early, so we did not see it all
+    stopped_because: str | None = None
     selector: str | None = None
 
     # filled in by classify_plan()
@@ -101,6 +102,7 @@ def enumerate_search(cfg, fetcher: Fetcher, search) -> SearchPlan:
                 "Run `karpm probe --url <url> --save` and check the saved HTML.",
                 search.name, url,
             )
+            plan.stopped_because = "a page returned no parseable ads"
             break
 
         plan.selector = result["selector"]
@@ -134,10 +136,18 @@ def enumerate_search(cfg, fetcher: Fetcher, search) -> SearchPlan:
         if search.max_listings is not None and len(plan.items) >= search.max_listings:
             del plan.items[search.max_listings:]
             plan.truncated = True
+            plan.stopped_because = f"reached the {search.max_listings}-ad limit"
+            break
+        if url is None:
+            plan.stopped_because = "the last page offered no next link"
             break
 
     if url and search.max_pages is not None and page >= search.max_pages:
         plan.truncated = True
+        plan.stopped_because = f"reached the {search.max_pages}-page limit"
+
+    log.info("[%s] stopped after %s page(s): %s", search.name, plan.pages_walked,
+             plan.stopped_because or "no more pages")
     return plan
 
 
@@ -173,8 +183,10 @@ def describe_plan(plan: SearchPlan, cfg) -> str:
         f"{len(plan.refresh)} due a refresh, {len(plan.unchanged)} unchanged",
         f"  {len(plan.to_fetch)} ad page(s) and {images} image(s) to fetch",
     ]
+    if plan.stopped_because:
+        lines.append(f"  stopped because {plan.stopped_because}")
     if plan.truncated:
-        lines.append("  (stopped early - this is not the whole search)")
+        lines.append("  (this is not the whole search)")
     return "\n".join(lines)
 
 
