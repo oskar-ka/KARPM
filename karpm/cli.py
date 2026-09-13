@@ -318,8 +318,6 @@ def cmd_trial(args) -> int:
     conn = db.connect(conf.db_path)
     db.init_db(conn)
 
-    pace = (conf.scrape.min_delay_s + conf.scrape.max_delay_s) / 2
-    image_pace = sum(conf.scrape.image_delay_range) / 2
     scope = (f"{limit} listing(s)" if limit is not None else "every listing") + ", " + \
             (f"{pages} page(s)" if pages is not None else "every page")
 
@@ -329,19 +327,7 @@ def cmd_trial(args) -> int:
           f"{conf.scrape.min_delay_s:.1f}-{conf.scrape.max_delay_s:.1f}s between pages, "
           f"{conf.scrape.image_delay_range[0]:.1f}-"
           f"{conf.scrape.image_delay_range[1]:.1f}s between images")
-
-    if limit is not None and pages is not None:
-        per_listing = conf.images.max_per_listing
-        images_est = 0 if (args.no_images or per_listing is None) else limit * per_listing
-        estimate = (pages + limit) * pace + images_est * image_pace
-        print(f"  expect roughly {estimate / 60:.1f} minute(s)"
-              f" ({pages + limit} page(s)"
-              + (f" + up to {images_est} image(s)" if images_est else "")
-              + "). Progress is logged as it goes.")
-    else:
-        print("  duration depends on how much the search returns; progress is logged "
-              "as it goes.")
-    print()
+    print("  the search pages are read first, so the plan below is a count, not a guess.\n")
 
     try:
         report = trial.run_trial(conf, conn, search, download_images=not args.no_images)

@@ -35,6 +35,23 @@ Nothing is ever deleted. A sold bike with a known final price and a known
 time-on-market is the most valuable row in the database — it is real evidence
 about what things sell for, as opposed to what people ask for.
 
+## The order a run works in
+
+1. **Enumerate.** Walk the search result pages only. This yields the search's
+   own total, how many pages there are, and each ad's photo count from its
+   thumbnail badge.
+2. **Classify.** Compare against what is stored: new, price changed, due a
+   refresh, or unchanged.
+3. **Fetch.** Open the ad pages of the first three groups only. Unchanged ads
+   just have `last_seen_at` bumped.
+4. **Images**, then **reconcile** anything that was not in the results.
+
+Doing it in this order means a run knows exactly how much work it faces before
+starting any of it, and the delisting check in step 4 gets the complete set of
+ads the search returned rather than a partial one. A run that stopped early
+(`max_pages`, `max_listings`) is marked truncated and skips step 4 entirely —
+it never saw the whole search, so an ad's absence proves nothing.
+
 ## What happens on every save
 
 Every ad goes through `db.upsert_listing()` (`karpm/db.py`). It has three jobs.

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
 from . import db, images, mailer, scoring
@@ -27,22 +28,69 @@ def _needs_refresh(row, refresh_after_hours: int) -> bool:
     return datetime.now(timezone.utc) - last > timedelta(hours=refresh_after_hours)
 
 
-def scrape_search(conn, cfg, fetcher: Fetcher, search, mark_missing: bool = True) -> dict:
-    """Walk one saved search, storing every listing it returns.
+@dataclass
+class SearchPlan:
+    """What one search contains, worked out before anything is fetched."""
 
-    `mark_missing` flags listings that were not seen this run as delisted. A
-    capped run (`search.max_listings`) must not do that - it never looked at
-    the rest of the search, so their absence means nothing.
+    search: object
+    items: list = field(default_factory=list)
+    total_results: int | None = None
+    page_count: int | None = None
+    per_page: int | None = None
+    pages_walked: int = 0
+    skipped_wanted: int = 0
+    truncated: bool = False          # we stopped early, so we did not see it all
+    selector: str | None = None
+
+    # filled in by classify_plan()
+    new: list = field(default_factory=list)
+    changed: list = field(default_factory=list)
+    refresh: list = field(default_factory=list)
+    unchanged: list = field(default_factory=list)
+
+    @property
+    def to_fetch(self) -> list:
+        return self.new + self.changed + self.refresh
+
+    def images_expected(self, max_per_listing: int | None) -> int:
+        """Exact number of photos the ads we will fetch are going to yield.
+
+        The search page shows each ad's photo count on its thumbnail, so this
+        is a count rather than an estimate. Ads with one photo carry no badge,
+        which is why an unknown count is taken as 1.
+        """
+        total = 0
+        for item in self.to_fetch:
+            count = item.get("image_count") or 1
+            total += min(count, max_per_listing) if max_per_listing else count
+        return total
+
+
+def enumerate_search(cfg, fetcher: Fetcher, search) -> SearchPlan:
+    """Phase one: walk the search pages and collect what is there.
+
+    Nothing is fetched beyond the result pages themselves. Doing this first
+    costs a handful of requests and buys an exact plan: how many ads exist, how
+    many are new, and precisely how many photos are about to be downloaded.
     """
-    counts = {"seen": 0, "new": 0, "changed": 0, "pages": 0, "delisted": 0,
-              "skipped_wanted": 0, "listed": 0, "capped": False}
-    seen_ids: set[str] = set()
+    plan = SearchPlan(search=search)
     url: str | None = search.url
     page = 0
 
     while url and (search.max_pages is None or page < search.max_pages):
-        log.info("[%s] page %s: %s", search.name, page + 1, url)
-        html = fetcher.get(url)
+        log.info("[%s] search page %s%s", search.name, page + 1,
+                 f"/{plan.page_count}" if plan.page_count else "")
+        try:
+            html = fetcher.get(url)
+        except FileNotFoundError:
+            if page == 0:
+                raise
+            # Results shrink while we are walking them, so a later page can
+            # vanish between being linked and being asked for. That is the end
+            # of the pagination, not a failed run.
+            log.info("[%s] page %s is gone (404) - treating it as the end",
+                     search.name, page + 1)
+            break
         result = parse_search_page(html, base_url=url)
 
         if not result["items"]:
@@ -53,53 +101,113 @@ def scrape_search(conn, cfg, fetcher: Fetcher, search, mark_missing: bool = True
             )
             break
 
-        counts["listed"] += len(result["items"])
-        counts["selector"] = result["selector"]
+        plan.selector = result["selector"]
+        if result.get("total_results") is not None:
+            plan.total_results = result["total_results"]
+            plan.page_count = result.get("page_count")
+            plan.per_page = result.get("per_page")
 
         for item in result["items"]:
             # "Gesuch" ads are people wanting to buy, not sell. Storing them
             # would skew the price comparables and waste scoring calls.
             if item.get("is_wanted"):
-                counts["skipped_wanted"] += 1
+                plan.skipped_wanted += 1
                 continue
+            plan.items.append(item)
 
-            seen_ids.add(item["id"])
-            counts["seen"] += 1
-            existing = db.get_listing(conn, item["id"])
-
-            if existing is not None:
-                price_changed = (
-                    item["price_eur"] is not None
-                    and item["price_eur"] != existing["price_eur"]
-                )
-                if not price_changed and not _needs_refresh(existing, cfg.scrape.refresh_after_hours):
-                    db.touch_listing(conn, item["id"])
-                    continue
-
-            log.info("[%s] listing %s/%s: %s %s", search.name, counts["seen"],
-                     search.max_listings or "?", item["id"], (item.get("title") or "")[:50])
-            outcome, stored_id = _fetch_and_store(conn, cfg, fetcher, item, search, referer=url)
-            # The ad page is the authority on its own id; record that too, so a
-            # listing is never reported missing just because the two disagree.
-            if stored_id:
-                seen_ids.add(stored_id)
-            if outcome == "new":
-                counts["new"] += 1
-            elif outcome in ("price_change", "edited", "relisted"):
-                counts["changed"] += 1
-
-            if search.max_listings is not None and counts["seen"] >= search.max_listings:
-                conn.commit()
-                counts["pages"] = page + 1
-                counts["capped"] = True
-                return counts
-
-        conn.commit()
-        url = result["next_url"]
         page += 1
-        counts["pages"] = page
+        plan.pages_walked = page
+        url = result["next_url"]
 
-    if mark_missing:
+        if search.max_listings is not None and len(plan.items) >= search.max_listings:
+            del plan.items[search.max_listings:]
+            plan.truncated = True
+            break
+
+    if url and search.max_pages is not None and page >= search.max_pages:
+        plan.truncated = True
+    return plan
+
+
+def classify_plan(conn, cfg, plan: SearchPlan) -> SearchPlan:
+    """Sort the plan's ads into new, changed, stale and unchanged.
+
+    Only the first three need their page fetched; the rest are simply still
+    there and get their last_seen timestamp bumped.
+    """
+    for item in plan.items:
+        existing = db.get_listing(conn, item["id"])
+        if existing is None:
+            plan.new.append(item)
+        elif item["price_eur"] is not None and item["price_eur"] != existing["price_eur"]:
+            plan.changed.append(item)
+        elif _needs_refresh(existing, cfg.scrape.refresh_after_hours):
+            plan.refresh.append(item)
+        else:
+            plan.unchanged.append(item)
+    return plan
+
+
+def describe_plan(plan: SearchPlan, cfg) -> str:
+    images = plan.images_expected(cfg.images.max_per_listing if cfg.images.enabled else 0)
+    lines = [
+        f"  {plan.total_results if plan.total_results is not None else len(plan.items)} ad(s) "
+        f"in this search" + (f" across {plan.page_count} page(s)" if plan.page_count else ""),
+        f"  {plan.pages_walked} page(s) walked, {len(plan.items)} ad(s) collected"
+        + (f", {plan.skipped_wanted} wanted ad(s) skipped" if plan.skipped_wanted else ""),
+        f"  {len(plan.new)} new, {len(plan.changed)} with a new price, "
+        f"{len(plan.refresh)} due a refresh, {len(plan.unchanged)} unchanged",
+        f"  {len(plan.to_fetch)} ad page(s) and {images} image(s) to fetch",
+    ]
+    if plan.truncated:
+        lines.append("  (stopped early - this is not the whole search)")
+    return "\n".join(lines)
+
+
+def scrape_search(conn, cfg, fetcher: Fetcher, search, mark_missing: bool = True) -> dict:
+    """Walk one saved search: enumerate it, then fetch only what needs fetching.
+
+    `mark_missing` reconciles listings that were not in the results. A run that
+    stopped early never saw the whole search, so it must not draw conclusions
+    from an ad's absence.
+    """
+    plan = classify_plan(conn, cfg, enumerate_search(cfg, fetcher, search))
+    log.info("[%s] plan:\n%s", search.name, describe_plan(plan, cfg))
+
+    counts = {"seen": len(plan.items), "new": 0, "changed": 0, "pages": plan.pages_walked,
+              "delisted": 0, "skipped_wanted": plan.skipped_wanted, "listed": len(plan.items),
+              "capped": plan.truncated, "selector": plan.selector,
+              "total_results": plan.total_results, "page_count": plan.page_count,
+              "unchanged": len(plan.unchanged),
+              "images_expected": plan.images_expected(cfg.images.max_per_listing)}
+
+    seen_ids = {item["id"] for item in plan.items}
+
+    for item in plan.unchanged:
+        db.touch_listing(conn, item["id"])
+
+    for index, item in enumerate(plan.to_fetch, start=1):
+        log.info("[%s] ad %s/%s: %s %s", search.name, index, len(plan.to_fetch),
+                 item["id"], (item.get("title") or "")[:50])
+        outcome, stored_id = _fetch_and_store(conn, cfg, fetcher, item, search,
+                                              referer=search.url)
+        # The ad page is the authority on its own id; record that too, so a
+        # listing is never reported missing just because the two disagree.
+        if stored_id:
+            seen_ids.add(stored_id)
+        if outcome == "new":
+            counts["new"] += 1
+        elif outcome in ("price_change", "edited", "relisted"):
+            counts["changed"] += 1
+        if index % 10 == 0:
+            conn.commit()
+
+    conn.commit()
+
+    if mark_missing and plan.truncated:
+        log.info("[%s] skipping the delisting check - the run stopped early, so an ad's "
+                 "absence from what we saw proves nothing", search.name)
+    elif mark_missing:
         counts.update(reconcile_missing(conn, cfg, fetcher, search, seen_ids))
         conn.commit()
     return counts
@@ -231,7 +339,7 @@ def run_scrape(conf, conn, fetcher: Fetcher | None = None) -> dict:
     fetcher = fetcher or Fetcher(conf.scrape)
     run_id = db.start_run(conn, "scrape")
     totals = {"seen": 0, "new": 0, "changed": 0, "delisted": 0, "skipped_wanted": 0,
-              "still_live": 0, "unverified": 0}
+              "still_live": 0, "unverified": 0, "unchanged": 0}
     ok = True
     error = None
 
@@ -250,6 +358,8 @@ def run_scrape(conf, conn, fetcher: Fetcher | None = None) -> dict:
             continue
         for key in totals:
             totals[key] += counts.get(key, 0)
+        # not a count: true if any search stopped short of the whole result set
+        totals["capped"] = totals.get("capped", False) or bool(counts.get("capped"))
         conn.execute(
             "UPDATE searches SET last_run_at = ?, last_status = ? WHERE name = ?",
             (db.utcnow(), f"{counts['new']} new / {counts['seen']} seen", search.name),

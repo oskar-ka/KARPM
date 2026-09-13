@@ -118,11 +118,21 @@ The report separates two kinds of gap: **MISSING** means a field should have
 parsed and did not — a bug worth reporting; *not stated* means the site never
 provides it for these ads (motorcycle listings have no `owners` or `condition`).
 
-The run prints its scope, its pace and an estimated duration before starting,
-and logs each listing and each batch of images as it goes, so a long wait is
-visible rather than looking like a hang. At the testing pace `--limit 5` takes
-well under a minute; `--all` has no predictable duration, so no estimate is
-offered for it.
+**The search pages are read first, then the ads.** Walking the result pages
+costs a handful of requests and produces an exact plan before anything else is
+fetched:
+
+```
+[bmw] plan:
+  143 ad(s) in this search across 6 page(s)
+  6 page(s) walked, 143 ad(s) collected, 1 wanted ad(s) skipped
+  12 new, 3 with a new price, 0 due a refresh, 128 unchanged
+  15 ad page(s) and 118 image(s) to fetch
+```
+
+Those are counts, not estimates: the search states its own total ("1 - 25 von
+143") and each ad's thumbnail carries its photo count. Unchanged ads never have
+their page fetched at all.
 
 ---
 

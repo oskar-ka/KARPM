@@ -273,3 +273,98 @@ def test_comparables_need_a_model_and_a_sample(conf, conn):
     pipeline.run_scrape(conf, conn, FakeFetcher())
     row = db.get_listing(conn, "2847612345")
     assert db.comparable_stats(conn, row) is None, "no model set, so no comparables"
+
+
+# --- the plan: enumerate first, then fetch -------------------------------------
+
+def test_enumeration_reads_the_searchs_own_total(conf, conn):
+    """The search page states "1 - 25 von 143", so a run never has to say "?"."""
+    plan = pipeline.enumerate_search(conf, FakeFetcher(), conf.searches[0])
+    assert plan.total_results == 143
+    assert plan.per_page == 25
+    assert plan.page_count == 6
+
+
+def test_plan_counts_images_exactly_from_the_thumbnail_badges(conf, conn):
+    plan = pipeline.classify_plan(conn, conf,
+                                  pipeline.enumerate_search(conf, FakeFetcher(), conf.searches[0]))
+    counts = [i["image_count"] for i in plan.items]
+    assert counts, "no image counts parsed"
+    # every collected ad is new on a fresh database, so all of them get fetched
+    assert len(plan.new) == len(plan.items)
+    uncapped = plan.images_expected(None)
+    assert uncapped == sum(c or 1 for c in counts)
+    # the per-listing cap is what actually gets downloaded
+    assert plan.images_expected(2) == sum(min(c or 1, 2) for c in counts)
+
+
+def test_nothing_is_fetched_during_enumeration(conf, conn):
+    fetcher = FakeFetcher()
+    pipeline.enumerate_search(conf, fetcher, conf.searches[0])
+    assert not [u for u in fetcher.requested if "/s-anzeige/" in u], \
+        "enumeration must only read search pages"
+
+
+def test_classify_splits_new_from_unchanged(conf, conn):
+    pipeline.run_scrape(conf, conn, FakeFetcher())
+
+    plan = pipeline.classify_plan(conn, conf,
+                                  pipeline.enumerate_search(conf, FakeFetcher(), conf.searches[0]))
+    assert plan.new == []
+    assert len(plan.unchanged) == len(plan.items)
+    assert plan.to_fetch == []
+
+
+def test_unchanged_listings_cost_no_ad_page_fetch(conf, conn):
+    pipeline.run_scrape(conf, conn, FakeFetcher())
+
+    fetcher = FakeFetcher()
+    counts = pipeline.run_scrape(conf, conn, fetcher)
+    assert counts["unchanged"] == 2
+    assert not [u for u in fetcher.requested if "/s-anzeige/" in u]
+
+
+def test_a_price_change_puts_an_ad_back_in_the_fetch_list(conf, conn):
+    pipeline.run_scrape(conf, conn, FakeFetcher())
+
+    fetcher = FakeFetcher(prices={"2847612345": "5.400 € VB"})
+    fetcher.search_html = fetcher.search_html.replace("5.900 € VB", "5.400 € VB")
+    plan = pipeline.classify_plan(conn, conf, pipeline.enumerate_search(
+        conf, fetcher, conf.searches[0]))
+    assert [i["id"] for i in plan.changed] == ["2847612345"]
+
+
+def test_a_truncated_run_never_reconciles_delistings(conf, conn):
+    """It did not see the whole search, so absence proves nothing."""
+    pipeline.run_scrape(conf, conn, FakeFetcher())
+
+    conf.searches[0].max_listings = 1
+    fetcher = _drop_from_results(FakeFetcher(gone={"2847698888"}))
+    counts = pipeline.run_scrape(conf, conn, fetcher)
+
+    assert counts["capped"] is True
+    assert counts["delisted"] == 0
+    assert db.get_listing(conn, "2847698888")["is_active"] == 1
+
+
+def test_a_404_on_a_later_search_page_ends_pagination_instead_of_the_run(conf, conn):
+    """Results shrink while being walked, so a linked page can vanish."""
+    class VanishingPage2(FakeFetcher):
+        def fetch(self, url, referer=None, binary=False, delay_range=None):
+            if "seite:2" in url:
+                raise FileNotFoundError(f"404 for {url}")
+            return super().fetch(url, referer=referer, binary=binary)
+
+    conf.searches[0].max_pages = 5
+    plan = pipeline.enumerate_search(conf, VanishingPage2(), conf.searches[0])
+    assert plan.pages_walked == 1
+    assert len(plan.items) == 2
+
+
+def test_a_404_on_the_first_search_page_is_still_an_error(conf, conn):
+    class NothingThere(FakeFetcher):
+        def fetch(self, url, referer=None, binary=False, delay_range=None):
+            raise FileNotFoundError(f"404 for {url}")
+
+    with pytest.raises(FileNotFoundError):
+        pipeline.enumerate_search(conf, NothingThere(), conf.searches[0])

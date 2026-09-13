@@ -139,6 +139,9 @@ def render(report: TrialReport, limit_note: str = "") -> str:
     add = lines.append
 
     add("SEARCH")
+    if counts.get("total_results") is not None:
+        add(f"  ads in this search   {counts['total_results']}"
+            + (f" across {counts['page_count']} page(s)" if counts.get("page_count") else ""))
     add(f"  pages fetched        {counts.get('pages', 0)}")
     add(f"  ads on those pages   {counts.get('listed', 0)}"
         f"   (matched by selector {counts.get('selector')!r})")
@@ -148,6 +151,8 @@ def render(report: TrialReport, limit_note: str = "") -> str:
     add(f"  stored as new        {counts.get('new', 0)}")
     if counts.get("changed"):
         add(f"  updated              {counts['changed']}")
+    if counts.get("unchanged"):
+        add(f"  already current      {counts['unchanged']}   (no ad page fetched)")
 
     add("")
     add("LISTINGS")

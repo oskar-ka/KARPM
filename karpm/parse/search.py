@@ -19,12 +19,13 @@ The legacy selectors are kept as a fallback in case an older page is served.
 from __future__ import annotations
 
 import json
+import math
 import re
 from urllib.parse import urljoin
 
 from bs4 import BeautifulSoup
 
-from .fields import ad_id_from_url, clean, parse_posted, parse_price
+from .fields import ad_id_from_url, clean, parse_int_de, parse_posted, parse_price
 
 BASE = "https://www.kleinanzeigen.de"
 
@@ -48,8 +49,34 @@ def _soup(html: str) -> BeautifulSoup:
     return BeautifulSoup(html, "lxml")
 
 
+# "1 - 25 von 143 Motorrad gebraucht kaufen in Bayern"
+RESULT_COUNT_RE = re.compile(
+    r"(\d[\d.]*)\s*[-\u2013]\s*(\d[\d.]*)\s*von\s*(\d[\d.]*)", re.IGNORECASE)
+COUNT_SELECTORS = ("#srp-breadcrumb-summary", "h1", ".breadcrumb-summary")
+
+
+def parse_result_count(soup) -> dict:
+    """How many ads the search has in total, and how many fit on a page.
+
+    Lets a run say "listing 3/143" instead of "3/?", work out how many pages
+    there are before walking them, and estimate its own duration.
+    """
+    for selector in COUNT_SELECTORS:
+        for node in soup.select(selector):
+            match = RESULT_COUNT_RE.search(node.get_text(" ", strip=True))
+            if match:
+                first = parse_int_de(match.group(1))
+                last = parse_int_de(match.group(2))
+                total = parse_int_de(match.group(3))
+                per_page = (last - first + 1) if (first and last and last >= first) else None
+                pages = math.ceil(total / per_page) if (total and per_page) else None
+                return {"total_results": total, "per_page": per_page, "page_count": pages}
+    return {"total_results": None, "per_page": None, "page_count": None}
+
+
 def parse_search_page(html: str, base_url: str = BASE) -> dict:
-    """Return {'items': [...], 'next_url': str|None, 'selector': str|None}."""
+    """Return the ads on the page, where the next one is, and how many there
+    are in total."""
     soup = _soup(html)
     items, used = [], None
 
@@ -73,7 +100,8 @@ def parse_search_page(html: str, base_url: str = BASE) -> dict:
         seen.add(item["id"])
         unique.append(item)
 
-    return {"items": unique, "next_url": _next_url(soup, base_url), "selector": used}
+    return {"items": unique, "next_url": _next_url(soup, base_url), "selector": used,
+            **parse_result_count(soup)}
 
 
 def _parse_item(node, base_url: str) -> dict | None:
@@ -97,6 +125,7 @@ def _parse_item(node, base_url: str) -> dict | None:
     return {
         "id": str(listing_id),
         "url": url,
+        "image_count": _image_count(node),
         "title": embedded.get("title") or _title(node),
         "snippet": embedded.get("description"),
         "thumbnail": embedded.get("contentUrl"),
@@ -109,6 +138,25 @@ def _parse_item(node, base_url: str) -> dict | None:
         # "PRO" marks a commercial seller.
         "is_commercial": _has_tag(node, "PRO"),
     }
+
+
+def _image_count(node) -> int | None:
+    """How many photos the ad has, from the badge on its thumbnail.
+
+    Knowing this before fetching anything is what lets a run state exactly how
+    many images it is about to download. `[data-image-container]` is a data
+    attribute rather than one of the Tailwind classes around it, so it should
+    outlive a restyle. Ads with a single photo carry no badge at all, which is
+    reported as None rather than guessed at.
+    """
+    container = node.select_one("[data-image-container]")
+    if container is None:
+        return None
+    for element in container.find_all(True):
+        text = element.get_text(strip=True)
+        if text.isdigit() and len(text) <= 3:
+            return int(text)
+    return None
 
 
 def _embedded_json(node) -> dict:

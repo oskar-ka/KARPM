@@ -251,6 +251,22 @@ def listing_images(conn: sqlite3.Connection, listing_id: str) -> list[sqlite3.Ro
     ).fetchall()
 
 
+def average_images_per_listing(conn: sqlite3.Connection, min_listings: int = 5) -> float | None:
+    """Mean photos stored per listing, or None if there is not enough to say.
+
+    Used to estimate how long a run will take. Measuring beats guessing: the
+    three real ads on hand had 8, 13 and 35 photos, which is an anecdote rather
+    than an average. Note this counts what was *stored*, so it already reflects
+    images.max_per_listing - which is the number a duration estimate wants.
+    """
+    row = conn.execute(
+        "SELECT COUNT(DISTINCT listing_id) AS listings, COUNT(*) AS images FROM images"
+    ).fetchone()
+    if not row or (row["listings"] or 0) < min_listings:
+        return None
+    return row["images"] / row["listings"]
+
+
 # --- scores -----------------------------------------------------------------
 
 def unscored_listings(
