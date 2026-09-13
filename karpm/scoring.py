@@ -118,8 +118,6 @@ def listing_to_text(row, comparables: dict | None, worked_out: dict | None = Non
             fmt("Final drive", row["drive_type"]),
             fmt("Transmission", row["transmission"]),
             fmt("Fuel", row["fuel_type"]),
-            fmt("Licence plate", row["plate"]),
-            fmt("Seasonal registration", row["plate_season"]),
             fmt("Seller", row["seller_type"]),
             fmt("Location", row["location"]),
             fmt("Posted", row["posted_at"]),

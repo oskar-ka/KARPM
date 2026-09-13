@@ -454,38 +454,36 @@ def _backup(path: Path) -> None:
 #
 # (label, column, format, what to say when it is not there)
 SPECIFICATIONS = (
-    ("price", "price_eur", "{:,} €", "no price given"),
-    ("mileage", "km", "{:,} km", "not stated"),
-    ("first registration", "first_reg_date", None, "not stated"),
-    ("power", "hp", "{} PS", "not stated"),
-    ("displacement", "ccm", "{} ccm", "not stated"),
-    ("type", "bike_type", None, "not stated"),
-    ("final drive", "drive_type", None, "not stated"),
-    ("transmission", "transmission", None, "not stated"),
-    ("previous owners", "owners", None, "not stated"),
-    ("condition", "condition", None, "not stated"),
-    ("HU until", "inspection_until", None, "not stated"),
+    ("price", "price_eur", "{:,} €", "unknown"),
+    ("mileage", "km", "{:,} km", "unknown"),
+    ("first registration", "first_reg_date", None, "unknown"),
+    ("power", "hp", "{} PS", "unknown"),
+    ("displacement", "ccm", "{} ccm", "unknown"),
+    ("type", "bike_type", None, "unknown"),
+    ("final drive", "drive_type", None, "unknown"),
+    ("transmission", "transmission", None, "unknown"),
+    ("previous owners", "owners", None, "unknown"),
+    ("condition", "condition", None, "unknown"),
+    ("HU until", "inspection_until", None, "unknown"),
     ("equipment", "equipment_json", None, "not listed"),
 )
 
 MISCELLANEOUS = (
-    ("make", "make", None, "not stated"),
-    ("model", "model", None, "not stated"),
-    ("model year", "model_year", None, "not stated"),
-    ("colour", "color", None, "not stated"),
-    ("fuel", "fuel_type", None, "not stated"),
-    ("service history", "full_service_hist", None, "not stated"),
-    ("damaged", "damaged", None, "not stated"),
-    ("licence plate", "plate", None, "not read"),
-    ("seasonal registration", "plate_season", None, "not a seasonal plate"),
-    ("seller", "seller_type", None, "not stated"),
-    ("seller name", "seller_name", None, "not stated"),
-    ("location", "location", None, "not stated"),
-    ("posted", "posted_at", None, "not stated"),
-    ("views", "view_count", None, "not stated"),
-    ("first seen", "first_seen_at", None, "-"),
-    ("last seen", "last_seen_at", None, "-"),
-    ("search", "search_name", None, "-"),
+    ("make", "make", None, "unknown"),
+    ("model", "model", None, "unknown"),
+    ("model year", "model_year", None, "unknown"),
+    ("colour", "color", None, "unknown"),
+    ("fuel", "fuel_type", None, "unknown"),
+    ("service history", "full_service_hist", None, "unknown"),
+    ("damaged", "damaged", None, "unknown"),
+    ("seller", "seller_type", None, "unknown"),
+    ("seller name", "seller_name", None, "unknown"),
+    ("location", "location", None, "unknown"),
+    ("posted", "posted_at", None, "unknown"),
+    ("views", "view_count", None, "unknown"),
+    ("first seen", "first_seen_at", None, "unknown"),
+    ("last seen", "last_seen_at", None, "unknown"),
+    ("search", "search_name", None, "unknown"),
 )
 
 YES_NO = {"full_service_hist", "damaged"}
@@ -506,7 +504,7 @@ def _unparsed(row) -> dict[str, str]:
     """Raw attributes whose column stayed empty, keyed by that column.
 
     An ad that says "HU: Neu" has said something about the HU. Reporting the
-    column as "not stated" would be a second way of losing it - so the row shows
+    column as "unknown" would be a second way of losing it - so the row shows
     what the ad actually said, and that it was not a date.
     """
     raw = json.loads(row["attributes_json"] or "{}")
@@ -526,7 +524,7 @@ def _rows(row, spec) -> list[tuple[str, str, bool]]:
     for label, column, template, missing in spec:
         value = _format(row, column, template)
         if value is None and column in unparsed:
-            out.append((label, f"{unparsed[column]} — not a usable value", True))
+            out.append((label, unparsed[column], True))
             continue
         out.append((label, value if value is not None else missing, value is None))
     return out
@@ -546,36 +544,29 @@ def _specifications(row) -> list:
 def _derived_rows(worked_out: dict, home_plz: str | None) -> list:
     """The same figures for every listing, and why one is missing when it is.
 
-    "cannot be worked out" rather than "not stated": the ad may well have said
+    "cannot be worked out" rather than "unknown": the ad may well have said
     it, we just have not got what it takes to compute the number.
     """
     months = worked_out["hu_months_left"]
     drop = worked_out["price_drop"]
     days = worked_out["days_on_market"]
     km = worked_out["km_per_year"]
+    distance = worked_out["distance_km"]
 
     return [
-        ("km per year",
-         f"{km:,}".replace(",", ".") if km is not None else
-         "cannot be worked out - needs mileage and a registration date", km is None),
+        ("km per year", f"{km:,}".replace(",", ".") if km is not None else "unknown",
+         km is None),
         ("age", f"{worked_out['age_years']} years" if worked_out["age_years"] is not None
-         else "cannot be worked out - no registration date",
-         worked_out["age_years"] is None),
+         else "unknown", worked_out["age_years"] is None),
         ("HU remaining",
-         ("expired " + f"{-months} month(s) ago" if months is not None and months < 0
-          else f"{months} month(s)") if months is not None
-         else "cannot be worked out - no HU date",
-         months is None),
-        ("distance from home",
-         f"≈ {worked_out['distance_km']} km" if worked_out["distance_km"] is not None
-         else ("cannot be worked out - set home_plz in the config" if not home_plz
-               else "cannot be worked out - the listing has no usable postcode"),
-         worked_out["distance_km"] is None),
-        ("on the market", f"{days} day(s)" if days is not None
-         else "cannot be worked out - no posting date", days is None),
-        ("price change",
-         f"cut by {drop[0]} € ({drop[1]}%) since it went up" if drop
-         else "unchanged since it went up", not drop),
+         (f"expired {-months} month(s) ago" if months < 0 else f"{months} month(s)")
+         if months is not None else "unknown", months is None),
+        # The one worth explaining: nothing about the listing is wrong, the
+        # config simply has not been told where you are.
+        ("distance from home", f"≈ {distance} km" if distance is not None
+         else ("no home_plz set" if not home_plz else "unknown"), distance is None),
+        ("on the market", f"{days} day(s)" if days is not None else "unknown", days is None),
+        ("price change", f"-{drop[0]} € ({drop[1]}%)" if drop else "none", not drop),
         ("photos", str(worked_out["photo_count"]), False),
     ]
 

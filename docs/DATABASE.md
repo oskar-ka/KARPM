@@ -337,7 +337,8 @@ is just running any command — existing rows and their history are preserved.
 | 3 | `commands` and `app_state` — the web UI's queue and the daemon's status, added with `karpm web`. |
 | 4 | No schema change. Descriptions stored as markup are rewritten as text, and their `content_hash` recomputed. |
 | 5 | `listings.parser_version`, `needs_refetch`, `needs_rescore`, `ignored` — the staleness flags. |
-| 6 | `listings.color`, `fuel_type`, `drive_type`, `transmission`, `equipment_json`, `plate`, `plate_season` — filled from the syndicated spec block. `PARSER_VERSION` 2. |
+| 6 | `listings.color`, `fuel_type`, `drive_type`, `transmission`, `equipment_json` — filled from the syndicated spec block. `PARSER_VERSION` 2. |
+| 7 | `plate` and `plate_season` dropped: reading a plate out of prose was guesswork. Best effort — a column left in place holds NULL and is read by nothing. |
 
 ## Two kinds of fact
 
@@ -348,8 +349,10 @@ The listing page shows them as three panels — **specifications**, **derived
 figures**, **miscellaneous figures** — and the first two show the same rows for
 every listing, whether or not the ad filled them in. A row that vanishes when it
 is empty makes two listings impossible to compare, and hides the fact that the
-ad never said. A specification that is missing says "not stated"; a derived
-figure says what it would have needed.
+ad never said. Either way the entry reads "unknown", except where the ad did say
+something the parser could not use — see below — and except distance, which says
+"no home_plz set" when that is the reason, since nothing about the listing is
+wrong in that case.
 
 **Read off the page** are the typed columns and `attributes_json`. The typed
 columns are what can be sorted and filtered on; `attributes_json` is the raw
@@ -358,14 +361,23 @@ emitting is noticed rather than dropped. A raw attribute is listed separately on
 `parse.fields.mapped_column()` decides that, and the page and the prompt share
 it, which is what keeps them from drifting apart as they once did. When a label
 *does* map somewhere but its value would not parse, the field's own row shows
-what the ad said — "HU: Neu" appears against `HU until`, not as "not stated",
-because the ad did say something and reporting otherwise loses it twice.
+what the ad said — `HU until` reads "Neu", not "unknown", because the ad did say
+something and reporting otherwise loses it twice.
 
 **Worked out** is `karpm/derived.py`: km per year, age, months of HU left, days
 on the market, the total price cut, distance from `home_plz`. None of it needs
 another request, and each is closer to what a person actually judges than the
 fields it comes from. Every one may be None, meaning "cannot say" — and is left
 off rather than shown as a zero, which would read as a fact.
+
+### What is *not* read from the description
+
+Only the block below. Nothing tries to pull facts out of a seller's prose —
+no "reads like it has been dropped", no plate hunted out of a sentence. A
+regex over free text guesses, and a wrong fact is worse than a missing one,
+because it is read as this bike's history. That work belongs to the scoring
+model, which sees the description and the photos anyway; the fields exist and
+stay empty until it is given the job.
 
 ### The block inside the description
 

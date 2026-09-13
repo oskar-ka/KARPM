@@ -26,7 +26,6 @@ from .fields import (
     clean,
     html_to_text,
     parse_location,
-    parse_plate,
     parse_posted,
     parse_price,
     parse_seller_type,
@@ -307,13 +306,6 @@ def parse_detail_page(html: str, url: str | None = None) -> dict:
         for label, value in spec.items():
             if label not in raw_attrs or _more_precise(label, value, raw_attrs[label]):
                 raw_attrs[label] = value
-
-    # A plate is only read where the text says that is what it is; see
-    # parse_plate. Most ads never mention one - the usual source is the photos,
-    # which only the scoring model sees.
-    plate, season = parse_plate(out.get("description"))
-    if plate:
-        out["plate"], out["plate_season"] = plate, season
 
     fields, attr_warnings = apply_attributes(raw_attrs)
     out.update(fields)

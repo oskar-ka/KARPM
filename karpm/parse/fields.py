@@ -290,36 +290,3 @@ def apply_attributes(attrs: dict[str, str]) -> tuple[dict, list[str]]:
             warnings.append(f"missing:{required}")
     return fields, warnings
 
-
-# A German plate: district letters, one or two identifying letters, up to four
-# digits - optionally followed by the two numbers of a Saisonkennzeichen.
-PLATE_RE = re.compile(
-    r"\b([A-ZÄÖÜ]{1,3})[-\s]?([A-Z]{1,2})[-\s]?(\d{1,4})\b(?:\s*(\d{1,2})\s*/\s*(\d{1,2}))?"
-)
-# Only read a plate where the text says that is what it is. The pattern alone
-# matches things like "TUV AU 2024" and half the model names on the site, and a
-# wrong plate is worse than none: it would be read as this bike's history.
-PLATE_CONTEXT = re.compile(r"(kennzeichen|nummernschild|amtliches?\s+kennzeichen)\s*:?\s*",
-                           re.IGNORECASE)
-
-
-def parse_plate(text: str | None) -> tuple[str | None, str | None]:
-    """A licence plate and its season, from text that says it is one.
-
-    Returns (plate, season) - season being "04/10" for a Saisonkennzeichen,
-    which says the bike is only registered April to October. That is worth
-    knowing on its own: it means winter storage, lower yearly mileage and a
-    cheaper insurance band.
-    """
-    if not text:
-        return None, None
-    context = PLATE_CONTEXT.search(text)
-    if not context:
-        return None, None
-    found = PLATE_RE.match(text[context.end():].strip())
-    if not found:
-        return None, None
-    district, letters, digits, from_month, to_month = found.groups()
-    plate = f"{district}-{letters} {digits}"
-    season = f"{int(from_month):02d}/{int(to_month):02d}" if from_month and to_month else None
-    return plate, season

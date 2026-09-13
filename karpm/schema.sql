@@ -39,8 +39,6 @@ CREATE TABLE IF NOT EXISTS listings (
     drive_type        TEXT,                      -- Antriebsart: Kardan | Kette | Riemen
     transmission      TEXT,                      -- Getriebe
     equipment_json    TEXT,                      -- Ausstattung list, when the ad has one
-    plate             TEXT,                      -- licence plate, if it can be read
-    plate_season      TEXT,                      -- "04/10" on a Saisonkennzeichen
 
     seller_type       TEXT,                      -- private | commercial | unknown
     seller_name       TEXT,

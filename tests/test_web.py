@@ -797,31 +797,32 @@ def test_a_value_that_would_not_parse_is_still_shown(client, app):
     assert b"Neu" in client.get("/listing/2847612345").get_data()
 
 
-def test_the_worked_out_panel_shows_what_it_can(client, app):
+def test_the_derived_panel_shows_what_it_can(client, app):
     _, config_path, _ = app
     with opened(config_path) as conn:
         conn.execute("UPDATE listings SET km = 56000, first_reg_date = '2004-08-01', "
                      "postcode = '80331' WHERE id = '2847612345'")
         conn.commit()
-    page = client.get("/listing/2847612345").get_data(as_text=True)
-    assert "km per year" in page
-    assert "worked out" in page
+    body = client.get("/listing/2847612345").get_data(as_text=True)
+    assert "km per year" in body
+    assert "derived figures" in body
 
 
-def test_distance_says_why_it_cannot_be_worked_out(client, app):
-    """The row is always there; what changes is whether it holds a number."""
+def test_distance_says_when_no_home_is_set(client, app):
+    """The row is always there; what changes is whether it holds a number. This
+    is the one blank worth explaining - nothing about the listing is wrong."""
     _, config_path, _ = app
     with opened(config_path) as conn:
         conn.execute("UPDATE listings SET postcode = '80331' WHERE id = '2847612345'")
         conn.commit()
     body = client.get("/listing/2847612345").get_data(as_text=True)
     assert "distance from home" in body
-    assert "set home_plz in the config" in body
+    assert "no home_plz set" in body
 
     config_path.write_text('home_plz = "22765"\n' + config_path.read_text(encoding="utf-8"),
                            encoding="utf-8")
     body = client.get("/listing/2847612345").get_data(as_text=True)
-    assert "set home_plz" not in body
+    assert "no home_plz set" not in body
     assert "km" in body
 
 
@@ -833,7 +834,10 @@ def test_a_listing_with_a_postcode_we_do_not_know_says_so(client, app):
         conn.execute("UPDATE listings SET postcode = NULL, location = NULL "
                      "WHERE id = '2847612345'")
         conn.commit()
-    assert "no usable postcode" in client.get("/listing/2847612345").get_data(as_text=True)
+    body = client.get("/listing/2847612345").get_data(as_text=True)
+    figures = body[body.index("<h2>derived figures</h2>"):body.index("<h2>description</h2>")]
+    assert "<dt>distance from home</dt>" in figures
+    assert "unknown" in figures
 
 
 def test_every_listing_shows_the_same_rows(client, app):
@@ -842,10 +846,13 @@ def test_every_listing_shows_the_same_rows(client, app):
     from karpm.web.app import SPECIFICATIONS
     _, config_path, _ = app
     with opened(config_path) as conn:
+        # attributes_json too: otherwise the rows show what the ad said, which
+        # is the right behaviour and not what this test is about.
         conn.execute("UPDATE listings SET km = NULL, hp = NULL, ccm = NULL, "
                      "owners = NULL, drive_type = NULL, transmission = NULL, "
                      "condition = NULL, inspection_until = NULL, bike_type = NULL, "
-                     "first_reg_date = NULL, price_eur = NULL WHERE id = '2847612345'")
+                     "first_reg_date = NULL, price_eur = NULL, equipment_json = NULL, "
+                     "attributes_json = '{}' WHERE id = '2847612345'")
         conn.commit()
     body = client.get("/listing/2847612345").get_data(as_text=True)
     specs = body[body.index("<h2>specifications</h2>"):body.index("<h2>score</h2>")]
@@ -853,7 +860,8 @@ def test_every_listing_shows_the_same_rows(client, app):
         assert f"<dt>{label}</dt>" in specs, label
     # Every one of them is marked as not being a value.
     assert specs.count('class="absent"') == len(SPECIFICATIONS)
-    assert "no price given" in specs
+    # Every one of them says so in the same word, bar the equipment list.
+    assert specs.count(">unknown</dd>") == len(SPECIFICATIONS) - 1
 
 
 def test_what_the_ad_said_is_shown_even_when_it_would_not_parse(client, app):
@@ -864,20 +872,47 @@ def test_what_the_ad_said_is_shown_even_when_it_would_not_parse(client, app):
         conn.execute("UPDATE listings SET inspection_until = NULL, attributes_json = ? "
                      "WHERE id = '2847612345'", ('{"HU": "Neu"}',))
         conn.commit()
-    specs = client.get("/listing/2847612345").get_data(as_text=True)
-    assert "Neu — not a usable value" in specs
+    body = client.get("/listing/2847612345").get_data(as_text=True)
+    specs = body[body.index("<h2>specifications</h2>"):body.index("<h2>score</h2>")]
     assert "<dt>HU until</dt>" in specs
+    assert ">Neu</dd>" in specs, "the ad's own word, not 'unknown' and not annotated"
 
 
-def test_a_missing_derived_figure_says_what_it_would_need(client, app):
+def test_a_missing_derived_figure_reads_unknown(client, app):
     _, config_path, _ = app
     with opened(config_path) as conn:
         conn.execute("UPDATE listings SET km = NULL, inspection_until = NULL, "
                      "posted_at = NULL WHERE id = '2847612345'")
         conn.commit()
     body = client.get("/listing/2847612345").get_data(as_text=True)
-    assert "needs mileage and a registration date" in body
-    assert "no HU date" in body
+    figures = body[body.index("<h2>derived figures</h2>"):body.index("<h2>description</h2>")]
+    for label in ("km per year", "HU remaining"):
+        assert f"<dt>{label}</dt>" in figures
+    assert figures.count(">unknown</dd>") >= 2
+
+
+def test_an_unchanged_price_reads_none(client, app):
+    body = client.get("/listing/2847612345").get_data(as_text=True)
+    figures = body[body.index("<h2>derived figures</h2>"):body.index("<h2>description</h2>")]
+    assert "<dt>price change</dt>" in figures
+    assert ">none</dd>" in figures
+
+
+def test_a_changed_price_is_short(client, app):
+    _, config_path, _ = app
+    with opened(config_path) as conn:
+        db.add_history(conn, "2847612345", "price_change", price_eur=5400,
+                       prev_price_eur=5900)
+        conn.commit()
+    body = client.get("/listing/2847612345").get_data(as_text=True)
+    assert "-500 € (8%)" in body
+
+
+def test_there_is_no_licence_plate_field(client, app):
+    """Reading a plate out of prose was guesswork; the photos are the AI's job."""
+    body = client.get("/listing/2847612345").get_data(as_text=True)
+    assert "licence plate" not in body
+    assert "seasonal registration" not in body
 
 
 def test_the_panels_are_named_as_asked(client):
