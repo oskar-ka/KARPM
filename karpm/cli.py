@@ -16,6 +16,33 @@ from .parse.detail import parse_detail_page
 from .parse.search import parse_search_page
 
 
+# Commands meant for trying things out run at the testing pace unless told
+# otherwise. The unattended ones - the scheduled runs that go on for months -
+# stay polite by default, because those are the ones that would get the Pi's IP
+# blocked.
+FAST_BY_DEFAULT = {"trial", "probe", "raw"}
+
+
+def _resolve_pace(args) -> bool:
+    if getattr(args, "fast", False):
+        return True
+    if getattr(args, "polite", False):
+        return False
+    return args.command in FAST_BY_DEFAULT
+
+
+def _apply_pace(conf, args):
+    """Swap in the testing delays when this invocation calls for them."""
+    fast = _resolve_pace(args)
+    conf.scrape = conf.scrape.at_pace(fast)
+    if fast and args.command not in FAST_BY_DEFAULT:
+        log = logging.getLogger(__name__)
+        log.warning("running %s at the testing pace (%.1f-%.1fs between pages) - fine for a "
+                    "one-off, but not what you want for an unattended schedule",
+                    args.command, conf.scrape.min_delay_s, conf.scrape.max_delay_s)
+    return conf
+
+
 def _setup_logging(verbose: bool) -> None:
     logging.basicConfig(
         level=logging.DEBUG if verbose else logging.INFO,
@@ -26,7 +53,7 @@ def _setup_logging(verbose: bool) -> None:
 
 
 def _open(args):
-    conf = load_config(args.config)
+    conf = _apply_pace(load_config(args.config), args)
     conn = db.connect(conf.db_path)
     db.init_db(conn)
     db.sync_searches(conn, conf.searches)
@@ -208,7 +235,7 @@ def cmd_probe(args) -> int:
     Run this first on the Pi: it is how you verify the selectors still match
     the live site without touching the database.
     """
-    conf = load_config(args.config)
+    conf = _apply_pace(load_config(args.config), args)
     fetcher = Fetcher(conf.scrape)
     html = Path(args.file).read_text(encoding="utf-8") if args.file else fetcher.get(args.url)
 
@@ -259,11 +286,16 @@ def cmd_trial(args) -> int:
     Runs the real fetcher, parsers, storage and image downloads, then stops:
     no scoring, no Claude API calls, no email.
     """
-    conf = load_config(args.config)
+    conf = _apply_pace(load_config(args.config), args)
+
+    limit = None if (args.no_limit or args.all) else args.limit
+    pages = None if (args.all_pages or args.all) else args.pages
+    if args.all_images or args.all:
+        conf.images.max_per_listing = None
 
     if args.url:
         search = SearchConfig(name="trial", url=args.url, make=args.make, model=args.model,
-                              max_pages=args.pages, max_listings=args.limit)
+                              max_pages=pages, max_listings=limit)
     else:
         try:
             configured = _search_by_name(conf, args.search, args.config)
@@ -271,7 +303,7 @@ def cmd_trial(args) -> int:
             print(exc, file=sys.stderr)
             return 2
         search = SearchConfig(**{**vars(configured),
-                                 "max_pages": args.pages, "max_listings": args.limit})
+                                 "max_pages": pages, "max_listings": limit})
 
     conf.db_path = args.db
     conf.images.dir = args.image_dir
@@ -288,19 +320,28 @@ def cmd_trial(args) -> int:
 
     pace = (conf.scrape.min_delay_s + conf.scrape.max_delay_s) / 2
     image_pace = sum(conf.scrape.image_delay_range) / 2
-    requests_est = args.pages + args.limit
-    images_est = 0 if args.no_images else args.limit * conf.images.max_per_listing
-    estimate = requests_est * pace + images_est * image_pace
+    scope = (f"{limit} listing(s)" if limit is not None else "every listing") + ", " + \
+            (f"{pages} page(s)" if pages is not None else "every page")
 
     print(f"Trial run: {search.url}")
-    print(f"  at most {args.limit} listing(s), {args.pages} page(s)")
-    print(f"  pacing: {conf.scrape.min_delay_s:.0f}-{conf.scrape.max_delay_s:.0f}s between "
-          f"pages, {conf.scrape.image_delay_range[0]:.1f}-"
+    print(f"  scope: {scope}")
+    print(f"  pacing: {'testing' if _resolve_pace(args) else 'production'} - "
+          f"{conf.scrape.min_delay_s:.1f}-{conf.scrape.max_delay_s:.1f}s between pages, "
+          f"{conf.scrape.image_delay_range[0]:.1f}-"
           f"{conf.scrape.image_delay_range[1]:.1f}s between images")
-    print(f"  expect roughly {estimate / 60:.1f} minute(s)"
-          f" ({requests_est} page(s)"
-          + (f" + up to {images_est} image(s)" if images_est else "")
-          + "). Progress is logged as it goes.\n")
+
+    if limit is not None and pages is not None:
+        per_listing = conf.images.max_per_listing
+        images_est = 0 if (args.no_images or per_listing is None) else limit * per_listing
+        estimate = (pages + limit) * pace + images_est * image_pace
+        print(f"  expect roughly {estimate / 60:.1f} minute(s)"
+              f" ({pages + limit} page(s)"
+              + (f" + up to {images_est} image(s)" if images_est else "")
+              + "). Progress is logged as it goes.")
+    else:
+        print("  duration depends on how much the search returns; progress is logged "
+              "as it goes.")
+    print()
 
     try:
         report = trial.run_trial(conf, conn, search, download_images=not args.no_images)
@@ -404,24 +445,41 @@ def main(argv: list[str] | None = None) -> int:
                         help="path to the config file (default: config.toml)")
     parser.add_argument("-v", "--verbose", action="store_true",
                         help="debug logging, including every URL fetched")
+    pace = parser.add_mutually_exclusive_group()
+    pace.add_argument("--fast", action="store_true",
+                      help="testing pace: short delays between requests. Default for "
+                           "trial, probe and raw.")
+    pace.add_argument("--polite", action="store_true",
+                      help="production pace: the delays in [scrape]. Default for scrape, "
+                           "run, score, digest and daemon.")
+
+    # The same flags after the subcommand, because that is where people type
+    # them. SUPPRESS keeps an unused flag here from overwriting the global one.
+    pace_parent = argparse.ArgumentParser(add_help=False)
+    parent_group = pace_parent.add_mutually_exclusive_group()
+    parent_group.add_argument("--fast", action="store_true", default=argparse.SUPPRESS,
+                              help="testing pace: short delays between requests")
+    parent_group.add_argument("--polite", action="store_true", default=argparse.SUPPRESS,
+                              help="production pace: the delays configured in [scrape]")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    sub.add_parser("init", help="create the database and register searches").set_defaults(
+    sub.add_parser(parents=[pace_parent], name="init", help="create the database and register searches").set_defaults(
         func=cmd_init)
-    sub.add_parser("scrape", help="fetch listings once").set_defaults(func=cmd_scrape)
-    sub.add_parser("score", help="score unscored listings and send instant alerts").set_defaults(
+    sub.add_parser(parents=[pace_parent], name="scrape", help="fetch listings once").set_defaults(func=cmd_scrape)
+    sub.add_parser(parents=[pace_parent], name="score", help="score unscored listings and send instant alerts").set_defaults(
         func=cmd_score)
-    sub.add_parser("run", help="scrape, then score and alert").set_defaults(func=cmd_run)
-    sub.add_parser("daemon", help="run continuously on the configured schedule").set_defaults(
+    sub.add_parser(parents=[pace_parent], name="run", help="scrape, then score and alert").set_defaults(func=cmd_run)
+    sub.add_parser(parents=[pace_parent], name="daemon", help="run continuously on the configured schedule").set_defaults(
         func=cmd_daemon)
-    sub.add_parser("stats", help="summarise what has been collected").set_defaults(func=cmd_stats)
+    sub.add_parser(parents=[pace_parent], name="stats", help="summarise what has been collected").set_defaults(func=cmd_stats)
 
-    p_digest = sub.add_parser("digest", help="send the digest email")
+    p_digest = sub.add_parser(parents=[pace_parent], name="digest", help="send the digest email")
     p_digest.add_argument("--dry-run", action="store_true", help="list what would be sent")
     p_digest.set_defaults(func=cmd_digest)
 
     p_raw = sub.add_parser(
-        "raw", help="one request, no retries or backoff - show exactly what the server returned")
+        "raw", parents=[pace_parent],
+        help="one request, no retries or backoff - show exactly what the server returned")
     p_raw.add_argument("url", nargs="?",
                        help="URL to fetch (omit when using --search)")
     p_raw.add_argument("--search", help="fetch the URL of this search from config.toml")
@@ -429,7 +487,7 @@ def main(argv: list[str] | None = None) -> int:
     p_raw.add_argument("--no-redirects", action="store_true", help="do not follow redirects")
     p_raw.set_defaults(func=cmd_raw)
 
-    p_probe = sub.add_parser("probe", help="parse one live or saved page and dump the result")
+    p_probe = sub.add_parser(parents=[pace_parent], name="probe", help="parse one live or saved page and dump the result")
     p_probe.add_argument("--url", help="page to fetch")
     p_probe.add_argument("--file", help="saved HTML file to parse instead")
     p_probe.add_argument("--save", help="write the fetched HTML here")
@@ -438,21 +496,29 @@ def main(argv: list[str] | None = None) -> int:
                          help="force how the page is parsed (default: detect)")
     p_probe.set_defaults(func=cmd_probe)
 
-    p_one = sub.add_parser("score-one", help="score a single listing by id")
+    p_one = sub.add_parser(parents=[pace_parent], name="score-one", help="score a single listing by id")
     p_one.add_argument("listing_id", help="Kleinanzeigen ad id, as stored in listings.id")
     p_one.add_argument("--save", action="store_true", help="store the score")
     p_one.add_argument("--show-prompt", action="store_true", help="print the prompt, don't call the API")
     p_one.set_defaults(func=cmd_score_one)
 
     p_trial = sub.add_parser(
-        "trial",
+        "trial", parents=[pace_parent],
         help="dry run: scrape and parse a search into a throwaway db, no scoring or email")
     p_trial.add_argument("--url", help="search URL to try (otherwise use --search)")
     p_trial.add_argument("--search", default="trial",
                          help="name of a search from config.toml to try instead of --url")
     p_trial.add_argument("--limit", type=int, default=5,
-                         help="stop after this many listings (default 5 - be kind to the site)")
+                         help="stop after this many listings (default 5)")
     p_trial.add_argument("--pages", type=int, default=1, help="max search pages (default 1)")
+    p_trial.add_argument("--no-limit", action="store_true",
+                         help="every ad on the pages walked, no listing cap")
+    p_trial.add_argument("--all-pages", action="store_true",
+                         help="follow pagination to the end instead of stopping at --pages")
+    p_trial.add_argument("--all-images", action="store_true",
+                         help="every photo per ad, ignoring images.max_per_listing")
+    p_trial.add_argument("--all", action="store_true",
+                         help="shorthand for --no-limit --all-pages --all-images")
     p_trial.add_argument("--db", default="data/trial.db", help="throwaway database path")
     p_trial.add_argument("--image-dir", default="data/trial_images",
                          help="where trial images are written (default: data/trial_images)")
@@ -465,12 +531,12 @@ def main(argv: list[str] | None = None) -> int:
                          help="also print the scoring prompt for the first listing")
     p_trial.set_defaults(func=cmd_trial)
 
-    p_images = sub.add_parser("images", help="download images that have no local file yet")
+    p_images = sub.add_parser(parents=[pace_parent], name="images", help="download images that have no local file yet")
     p_images.add_argument("--limit", type=int, default=500,
                           help="maximum images to download in one go (default: 500)")
     p_images.set_defaults(func=cmd_images)
 
-    p_top = sub.add_parser("top", help="best-scoring active listings")
+    p_top = sub.add_parser(parents=[pace_parent], name="top", help="best-scoring active listings")
     p_top.add_argument("--min-score", type=int, default=4,
                        help="lowest overall score to show (default: 4)")
     p_top.add_argument("--limit", type=int, default=20,

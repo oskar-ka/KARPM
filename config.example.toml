@@ -31,6 +31,15 @@ max_delay_s = 9.0
 # pacing them like search queries multiplies the runtime for no benefit.
 image_min_delay_s = 0.4
 image_max_delay_s = 1.2
+
+# The testing pace, used by trial/probe/raw and by --fast. The slower pace above
+# exists for rate limiting, not to look human: Kleinanzeigen's bot protection
+# reacts to how fast one IP asks, and the penalty is a captcha wall for a few
+# hours. If you never get blocked, lower the production values too.
+fast_min_delay_s = 0.5
+fast_max_delay_s = 1.5
+fast_image_min_delay_s = 0.1
+fast_image_max_delay_s = 0.3
 timeout_s = 30.0
 max_retries = 3
 block_threshold = 3

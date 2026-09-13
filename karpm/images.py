@@ -37,7 +37,7 @@ def download_pending(conn, fetcher, cfg, limit: int = 500,
     for row in rows:
         listing_id = row["listing_id"]
         per_listing[listing_id] = per_listing.get(listing_id, 0) + 1
-        if per_listing[listing_id] > cfg.max_per_listing:
+        if cfg.max_per_listing is not None and per_listing[listing_id] > cfg.max_per_listing:
             continue
         try:
             data = fetcher.get(row["url"], binary=True, delay_range=delay_range)

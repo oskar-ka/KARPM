@@ -60,3 +60,112 @@ def test_raw_accepts_a_bare_url(tmp_path):
 def test_raw_accepts_search_alone(tmp_path):
     with pytest.raises(FileNotFoundError):
         main(["-c", str(tmp_path / "absent.toml"), "raw", "--search", "mt07"])
+
+
+# --- pacing -------------------------------------------------------------------
+
+import argparse  # noqa: E402
+
+from karpm.cli import FAST_BY_DEFAULT, _resolve_pace  # noqa: E402
+
+
+def _args(command, fast=False, polite=False):
+    return argparse.Namespace(command=command, fast=fast, polite=polite)
+
+
+@pytest.mark.parametrize("command", sorted(FAST_BY_DEFAULT))
+def test_testing_commands_are_fast_by_default(command):
+    assert _resolve_pace(_args(command)) is True
+
+
+@pytest.mark.parametrize("command", ["scrape", "run", "daemon", "score", "digest", "images"])
+def test_unattended_commands_stay_polite_by_default(command):
+    """These run for months on a schedule; a fast default there is what would
+    actually get the Pi blocked."""
+    assert _resolve_pace(_args(command)) is False
+
+
+def test_flags_override_the_default_either_way():
+    assert _resolve_pace(_args("scrape", fast=True)) is True
+    assert _resolve_pace(_args("trial", polite=True)) is False
+
+
+def test_at_pace_does_not_mutate_the_original():
+    from karpm.config import ScrapeConfig
+    polite = ScrapeConfig()
+    fast = polite.at_pace(True)
+    assert fast.page_delay_range == (polite.fast_min_delay_s, polite.fast_max_delay_s)
+    assert polite.page_delay_range == (4.0, 9.0)
+    assert polite.at_pace(False) is polite
+
+
+# --- trial scope flags --------------------------------------------------------
+
+def _run_trial_capturing(monkeypatch, tmp_path, extra_argv):
+    """Invoke cmd_trial for real, capturing the search it builds.
+
+    The banner and scope resolution live in cmd_trial, which the trial tests
+    never reach because they call run_trial directly - a broken banner shipped
+    once because of exactly that gap.
+    """
+    captured = {}
+
+    class FakeReport:
+        counts = {"pages": 1, "listed": 0, "seen": 0, "new": 0}
+        rows = []
+        coverage = {}
+        image_stats = {"urls": 0, "downloaded": 0, "failed": 0, "bytes": 0,
+                       "listings_with_images": 0, "attempted": True, "saved_this_run": 0}
+        warnings = []
+        ok = True
+
+    def fake_run_trial(conf, conn, search, fetcher=None, download_images=True):
+        captured["search"] = search
+        captured["max_per_listing"] = conf.images.max_per_listing
+        captured["delays"] = conf.scrape.page_delay_range
+        return FakeReport()
+
+    monkeypatch.setattr("karpm.trial.run_trial", fake_run_trial)
+    monkeypatch.setattr("karpm.trial.render", lambda report, limit_note="": "RENDERED")
+
+    config = tmp_path / "config.toml"
+    config.write_text('db_path = "x.db"\n', encoding="utf-8")
+    main(["-c", str(config), "trial", "--url", "https://example.invalid/s",
+          "--db", str(tmp_path / "t.db"), *extra_argv])
+    return captured
+
+
+def test_trial_defaults_to_a_capped_scope(monkeypatch, tmp_path):
+    got = _run_trial_capturing(monkeypatch, tmp_path, ["--no-images"])
+    assert got["search"].max_listings == 5
+    assert got["search"].max_pages == 1
+
+
+def test_no_limit_removes_the_listing_cap(monkeypatch, tmp_path):
+    got = _run_trial_capturing(monkeypatch, tmp_path, ["--no-limit", "--no-images"])
+    assert got["search"].max_listings is None
+    assert got["search"].max_pages == 1
+
+
+def test_all_pages_follows_pagination_to_the_end(monkeypatch, tmp_path):
+    got = _run_trial_capturing(monkeypatch, tmp_path, ["--all-pages", "--no-images"])
+    assert got["search"].max_pages is None
+
+
+def test_all_images_lifts_the_per_listing_cap(monkeypatch, tmp_path):
+    got = _run_trial_capturing(monkeypatch, tmp_path, ["--all-images"])
+    assert got["max_per_listing"] is None
+
+
+def test_all_is_shorthand_for_the_three(monkeypatch, tmp_path):
+    got = _run_trial_capturing(monkeypatch, tmp_path, ["--all"])
+    assert got["search"].max_listings is None
+    assert got["search"].max_pages is None
+    assert got["max_per_listing"] is None
+
+
+def test_trial_runs_at_the_testing_pace_but_polite_overrides(monkeypatch, tmp_path):
+    fast = _run_trial_capturing(monkeypatch, tmp_path, ["--no-images"])
+    assert fast["delays"] == (0.5, 1.5)
+    polite = _run_trial_capturing(monkeypatch, tmp_path, ["--no-images", "--polite"])
+    assert polite["delays"] == (4.0, 9.0)

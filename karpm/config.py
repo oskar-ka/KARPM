@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 try:                                   # tomllib is stdlib from Python 3.11
@@ -33,7 +33,8 @@ class SearchConfig:
     name: str
     url: str
     enabled: bool = True
-    max_pages: int = 10
+    # None means every page, until the site stops offering a next one.
+    max_pages: int | None = 10
     # Kleinanzeigen motorcycle ads carry a "Marke" but no "Modell" attribute, so
     # the model cannot be parsed off the page. Since one search URL targets one
     # model anyway, declare it here: it is what groups listings into the price
@@ -57,6 +58,14 @@ class ScrapeConfig:
     # search queries makes them ~90% of a run's waiting for no benefit.
     image_min_delay_s: float = 0.4
     image_max_delay_s: float = 1.2
+    # The testing pace, used by `trial`/`probe`/`raw` and by --fast. The point
+    # of the slower pace is rate limiting, not looking human: Kleinanzeigen's
+    # bot protection reacts to how fast one IP asks, and the penalty is a
+    # captcha wall for a few hours. These values are still far short of a burst.
+    fast_min_delay_s: float = 0.5
+    fast_max_delay_s: float = 1.5
+    fast_image_min_delay_s: float = 0.1
+    fast_image_max_delay_s: float = 0.3
     timeout_s: float = 30.0
     max_retries: int = 3
     user_agent: str = (
@@ -74,6 +83,22 @@ class ScrapeConfig:
     @property
     def image_delay_range(self) -> tuple[float, float]:
         return (self.image_min_delay_s, self.image_max_delay_s)
+
+    @property
+    def page_delay_range(self) -> tuple[float, float]:
+        return (self.min_delay_s, self.max_delay_s)
+
+    def at_pace(self, fast: bool) -> "ScrapeConfig":
+        """A copy at the testing pace, or this one unchanged."""
+        if not fast:
+            return self
+        return replace(
+            self,
+            min_delay_s=self.fast_min_delay_s,
+            max_delay_s=self.fast_max_delay_s,
+            image_min_delay_s=self.fast_image_min_delay_s,
+            image_max_delay_s=self.fast_image_max_delay_s,
+        )
     # Re-fetch the detail page of a known listing at most this often (hours).
     refresh_after_hours: int = 24
     # A listing missing from the search results has its own page checked before
@@ -93,7 +118,8 @@ class ScrapeConfig:
 class ImageConfig:
     enabled: bool = True
     dir: str = "data/images"
-    max_per_listing: int = 12
+    # None means every photo the ad has.
+    max_per_listing: int | None = 12
     max_bytes: int = 5_000_000
 
 

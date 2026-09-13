@@ -40,7 +40,7 @@ def scrape_search(conn, cfg, fetcher: Fetcher, search, mark_missing: bool = True
     url: str | None = search.url
     page = 0
 
-    while url and page < search.max_pages:
+    while url and (search.max_pages is None or page < search.max_pages):
         log.info("[%s] page %s: %s", search.name, page + 1, url)
         html = fetcher.get(url)
         result = parse_search_page(html, base_url=url)

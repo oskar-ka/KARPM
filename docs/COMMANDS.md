@@ -17,7 +17,32 @@ karpm [-c CONFIG] [-v] <command> [options]
 |---|---|---|
 | `-c`, `--config PATH` | `config.toml` | Path to the config file. |
 | `-v`, `--verbose` | off | Debug logging, including every URL fetched. Use this when something is behaving oddly. |
+| `--fast` | see below | Testing pace: short delays between requests. |
+| `--polite` | see below | Production pace: the delays in `[scrape]`. |
 | `-h`, `--help` | — | Help, at top level or for any command. |
+
+Either pace flag works before or after the command (`karpm --fast trial …` and
+`karpm trial --fast` are the same).
+
+### Pacing
+
+The delay between requests is about **rate limiting, not looking human**.
+Kleinanzeigen's bot protection reacts to how fast a single IP asks, and the
+penalty is a captcha wall for a few hours — which is why the unattended
+commands stay slow.
+
+| | Between pages | Between images |
+|---|---|---|
+| Production (`[scrape]`) | `min_delay_s`–`max_delay_s`, default 4–9 s | `image_*`, default 0.4–1.2 s |
+| Testing (`fast_*`) | default 0.5–1.5 s | default 0.1–0.3 s |
+
+**`trial`, `probe` and `raw` use the testing pace by default**; `scrape`, `run`,
+`score`, `digest`, `daemon` and `images` use the production pace. Forcing a
+production command fast logs a warning — it is fine for a one-off, but a
+schedule running for months at that rate is what would get the Pi blocked.
+
+Images are paced separately because they come from a static CDN rather than the
+search backend, and they are the large majority of a run's requests.
 
 Secrets are **not** in the config file. They are read from the environment, or
 from a `.env` file in the working directory: `ANTHROPIC_API_KEY` for scoring and
@@ -72,8 +97,12 @@ karpm trial --url "https://www.kleinanzeigen.de/s-motorraeder-roller/..." \
 |---|---|---|
 | `--url URL` | — | Search URL to try. Either this or `--search`. |
 | `--search NAME` | `trial` | Use a search already defined in `config.toml` instead of `--url`. |
-| `--limit N` | `5` | Stop after N listings. Every listing is a real request — keep this small. |
+| `--limit N` | `5` | Stop after N listings. |
 | `--pages N` | `1` | Maximum search-result pages to walk. |
+| `--no-limit` | off | No listing cap — every ad on the pages walked. |
+| `--all-pages` | off | Follow pagination to the end instead of stopping at `--pages`. |
+| `--all-images` | off | Every photo per ad, ignoring `images.max_per_listing`. |
+| `--all` | off | Shorthand for `--no-limit --all-pages --all-images`. |
 | `--db PATH` | `data/trial.db` | Throwaway database. Wiped at the start of each run unless `--keep`. |
 | `--image-dir PATH` | `data/trial_images` | Where trial images are written. |
 | `--make NAME` | — | Make to record on each listing, as in `config.toml`. |
@@ -89,12 +118,11 @@ The report separates two kinds of gap: **MISSING** means a field should have
 parsed and did not — a bug worth reporting; *not stated* means the site never
 provides it for these ads (motorcycle listings have no `owners` or `condition`).
 
-**It is not fast, and that is deliberate.** Every listing is a real request to a
-real site. The run prints an estimate before it starts and logs each listing and
-each batch of images as it goes, so a long wait is visible rather than looking
-like a hang. With the default pacing `--limit 5` takes roughly a minute and a
-half; most of that is the ad photos, so `--no-images` cuts it to about half a
-minute.
+The run prints its scope, its pace and an estimated duration before starting,
+and logs each listing and each batch of images as it goes, so a long wait is
+visible rather than looking like a hang. At the testing pace `--limit 5` takes
+well under a minute; `--all` has no predictable duration, so no estimate is
+offered for it.
 
 ---
 
