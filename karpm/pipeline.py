@@ -174,6 +174,7 @@ def run_scoring_and_alerts(conf, conn) -> dict:
     run_id = db.start_run(conn, "score")
     scored = scoring.score_pending(conn, conf.scoring)
     alerts = 0
+    alert_failures = 0
 
     for score in scored:
         if not mailer.qualifies_for_instant(conf.email, score, score.get("price_eur")):
@@ -189,9 +190,10 @@ def run_scoring_and_alerts(conf, conn) -> dict:
             alerts += 1
         except mailer.MailError as exc:
             log.error("instant alert failed for %s: %s", score["listing_id"], exc)
+            alert_failures += 1
 
     db.finish_run(conn, run_id, True, scored=len(scored))
-    return {"scored": len(scored), "alerts": alerts}
+    return {"scored": len(scored), "alerts": alerts, "alert_failures": alert_failures}
 
 
 def run_once(conf, conn) -> dict:
@@ -203,12 +205,17 @@ def run_once(conf, conn) -> dict:
 
 
 def run_digest(conf, conn) -> str | None:
+    """Send the digest. Returns the provider id, or None if there was nothing
+    to send. Raises MailError if sending failed - "nothing to send" and "could
+    not send" must not look alike, or a broken API key reads as a quiet success
+    for as long as nobody checks their inbox.
+    """
     run_id = db.start_run(conn, "digest")
     try:
         provider_id = mailer.send_digest(conn, conf.email, conf.resend_api_key)
     except mailer.MailError as exc:
         log.error("digest failed: %s", exc)
         db.finish_run(conn, run_id, False, error=str(exc))
-        return None
+        raise
     db.finish_run(conn, run_id, True)
     return provider_id

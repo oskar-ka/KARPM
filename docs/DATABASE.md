@@ -147,6 +147,58 @@ already feeds the scoring prompt: `db.comparable_stats()` pulls price
 percentiles for the model from your own rows, so "good value" is judged against
 your real market rather than the model's recollection of one.
 
+## Browsing it without writing SQL
+
+All of these open `data/karpm.db` directly. Reading while the daemon is running
+is safe — WAL mode allows readers and a writer at the same time.
+
+**Datasette** — the best fit for a Pi. A local web UI: click a table, sort by
+clicking a column, filter with dropdowns, no SQL anywhere.
+
+```bash
+pip install datasette
+datasette serve data/karpm.db                  # then open http://127.0.0.1:8001
+datasette serve data/karpm.db --host 0.0.0.0   # browse from your laptop instead
+```
+
+Serving on `0.0.0.0` exposes the database to anyone on your network. On an
+untrusted network, leave it on localhost and use an SSH tunnel:
+`ssh -L 8001:localhost:8001 pi@raspberrypi`.
+
+**VisiData** — a spreadsheet in the terminal, ideal over SSH. Arrow keys to move,
+`Enter` to open a table, `[` / `]` to sort, `/` to search, `q` to go back.
+
+```bash
+pip install visidata
+vd data/karpm.db
+```
+
+**DB Browser for SQLite** — the familiar desktop GUI, if the machine has one.
+Its "Browse Data" tab is a plain table view.
+
+```bash
+sudo apt install sqlitebrowser
+```
+
+**`sqlite3`** — always available, but you have to write SQL. Worth knowing two
+dot-commands that make it readable:
+
+```bash
+sqlite3 data/karpm.db
+sqlite> .mode box
+sqlite> .headers on
+sqlite> SELECT id, price_eur, km, title FROM listings LIMIT 5;
+sqlite> .tables
+sqlite> .schema listings
+sqlite> .quit
+```
+
+`litecli` (`pip install litecli`) is the same thing with autocompletion and
+syntax highlighting.
+
+For the common questions there is no need to open the database at all —
+`karpm stats` and `karpm top --min-score 4` already answer them.
+
 ## Durability
 
 `connect()` sets `journal_mode=WAL` and `synchronous=NORMAL` — a good trade on

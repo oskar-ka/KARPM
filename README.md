@@ -184,8 +184,9 @@ person browsing for an hour. Speeding this up is how you get blocked.
 
 ## Documentation
 
+- [`docs/COMMANDS.md`](docs/COMMANDS.md) — every command and flag.
 - [`docs/DATABASE.md`](docs/DATABASE.md) — what is stored, how a save works,
-  and how to query it.
+  how to query it, and how to browse it without writing SQL.
 
 ## Tests
 

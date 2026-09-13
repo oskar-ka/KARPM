@@ -55,7 +55,7 @@ def cmd_score(args) -> int:
     result = pipeline.run_scoring_and_alerts(conf, conn)
     print(json.dumps(result, indent=2))
     conn.close()
-    return 0
+    return 1 if result.get("alert_failures") else 0
 
 
 def cmd_digest(args) -> int:
@@ -67,8 +67,13 @@ def cmd_digest(args) -> int:
             print(f"  [{row['overall']}/5] {row['title']} - {row['price_eur']} EUR  {row['url']}")
         conn.close()
         return 0
-    provider_id = pipeline.run_digest(conf, conn)
-    print(f"digest sent: {provider_id}" if provider_id else "nothing to send")
+    try:
+        provider_id = pipeline.run_digest(conf, conn)
+    except mailer.MailError as exc:
+        print(f"digest FAILED to send: {exc}", file=sys.stderr)
+        conn.close()
+        return 1
+    print(f"digest sent: {provider_id}" if provider_id else "nothing new to send")
     conn.close()
     return 0
 
@@ -287,8 +292,10 @@ def cmd_top(args) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="karpm", description=__doc__)
-    parser.add_argument("-c", "--config", default="config.toml")
-    parser.add_argument("-v", "--verbose", action="store_true")
+    parser.add_argument("-c", "--config", default="config.toml",
+                        help="path to the config file (default: config.toml)")
+    parser.add_argument("-v", "--verbose", action="store_true",
+                        help="debug logging, including every URL fetched")
     sub = parser.add_subparsers(dest="command", required=True)
 
     sub.add_parser("init", help="create the database and register searches").set_defaults(
@@ -315,7 +322,7 @@ def main(argv: list[str] | None = None) -> int:
     p_probe.set_defaults(func=cmd_probe)
 
     p_one = sub.add_parser("score-one", help="score a single listing by id")
-    p_one.add_argument("listing_id")
+    p_one.add_argument("listing_id", help="Kleinanzeigen ad id, as stored in listings.id")
     p_one.add_argument("--save", action="store_true", help="store the score")
     p_one.add_argument("--show-prompt", action="store_true", help="print the prompt, don't call the API")
     p_one.set_defaults(func=cmd_score_one)
@@ -330,7 +337,8 @@ def main(argv: list[str] | None = None) -> int:
                          help="stop after this many listings (default 5 - be kind to the site)")
     p_trial.add_argument("--pages", type=int, default=1, help="max search pages (default 1)")
     p_trial.add_argument("--db", default="data/trial.db", help="throwaway database path")
-    p_trial.add_argument("--image-dir", default="data/trial_images")
+    p_trial.add_argument("--image-dir", default="data/trial_images",
+                         help="where trial images are written (default: data/trial_images)")
     p_trial.add_argument("--make", help="make to record, as in config.toml")
     p_trial.add_argument("--model", help="model to record, as in config.toml")
     p_trial.add_argument("--no-images", action="store_true", help="skip image downloads")
@@ -341,12 +349,15 @@ def main(argv: list[str] | None = None) -> int:
     p_trial.set_defaults(func=cmd_trial)
 
     p_images = sub.add_parser("images", help="download images that have no local file yet")
-    p_images.add_argument("--limit", type=int, default=500)
+    p_images.add_argument("--limit", type=int, default=500,
+                          help="maximum images to download in one go (default: 500)")
     p_images.set_defaults(func=cmd_images)
 
     p_top = sub.add_parser("top", help="best-scoring active listings")
-    p_top.add_argument("--min-score", type=int, default=4)
-    p_top.add_argument("--limit", type=int, default=20)
+    p_top.add_argument("--min-score", type=int, default=4,
+                       help="lowest overall score to show (default: 4)")
+    p_top.add_argument("--limit", type=int, default=20,
+                       help="maximum listings to show (default: 20)")
     p_top.set_defaults(func=cmd_top)
 
     args = parser.parse_args(argv)

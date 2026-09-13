@@ -129,3 +129,39 @@ def test_score_row_roundtrips_through_the_database(populated):
     row = conn.execute("SELECT * FROM listing_current WHERE id = ?", ("2847612345",)).fetchone()
     assert row["overall"] == 5
     assert json.loads(row["pros_json"])[0] == "Scheckheft lückenlos"
+
+
+def test_digest_send_failure_is_not_silent(populated, monkeypatch):
+    """"Nothing to send" and "could not send" must not look alike - otherwise a
+    broken API key reads as a quiet success until someone checks their inbox."""
+    from karpm import pipeline
+
+    conf, conn = populated
+    conf.email.enabled = True
+    conf.email.to_addresses = ["me@example.com"]
+
+    def fail(*args, **kwargs):
+        raise mailer.MailError("Resend returned 401: invalid api key")
+
+    monkeypatch.setattr(mailer, "send", fail)
+    with pytest.raises(mailer.MailError):
+        pipeline.run_digest(conf, conn)
+
+    run = conn.execute("SELECT * FROM runs WHERE kind = 'digest' ORDER BY id DESC").fetchone()
+    assert run["ok"] == 0
+    assert "401" in run["error"]
+
+
+def test_nothing_to_send_is_still_a_success(populated, monkeypatch):
+    from karpm import pipeline
+
+    conf, conn = populated
+    conf.email.enabled = True
+    conf.email.to_addresses = ["me@example.com"]
+    conf.email.digest_min_score = 6          # nothing qualifies
+    monkeypatch.setattr(mailer, "send", lambda *a, **k: "email_1")
+
+    assert pipeline.run_digest(conf, conn) is None
+    run = conn.execute("SELECT * FROM runs WHERE kind = 'digest' ORDER BY id DESC").fetchone()
+    assert run["ok"] == 1
+    assert run["error"] is None
