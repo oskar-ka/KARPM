@@ -10,7 +10,7 @@ from importlib import resources
 from pathlib import Path
 from typing import Any, Iterable
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 def utcnow() -> str:
@@ -368,6 +368,87 @@ def finish_run(conn: sqlite3.Connection, run_id: int, ok: bool, **counts) -> Non
     params.append(run_id)
     conn.execute(sql, params)
     conn.commit()
+
+
+# --- daemon control ---------------------------------------------------------
+
+COMMANDS = ("scrape", "digest", "rescore")
+
+
+def queue_command(conn: sqlite3.Connection, command: str, params: dict | None = None) -> int:
+    """Ask the daemon to do something. It picks this up on its next poll."""
+    if command not in COMMANDS:
+        raise ValueError(f"unknown command {command!r}")
+    cur = conn.execute(
+        "INSERT INTO commands (command, params_json, requested_at) VALUES (?, ?, ?)",
+        (command, json.dumps(params or {}, ensure_ascii=False), utcnow()),
+    )
+    conn.commit()
+    return int(cur.lastrowid)
+
+
+def claim_command(conn: sqlite3.Connection) -> sqlite3.Row | None:
+    """Take the oldest pending command and mark it running.
+
+    The update is conditional on the row still being pending, so a second
+    claimer gets nothing rather than the same work.
+    """
+    row = conn.execute(
+        "SELECT id FROM commands WHERE status = 'pending' ORDER BY id LIMIT 1"
+    ).fetchone()
+    if row is None:
+        return None
+    cur = conn.execute(
+        "UPDATE commands SET status = 'running', started_at = ? "
+        "WHERE id = ? AND status = 'pending'", (utcnow(), row["id"]))
+    conn.commit()
+    if cur.rowcount == 0:
+        return None
+    # Re-read, so the caller gets the row as it now stands rather than a
+    # snapshot that still says "pending".
+    return conn.execute("SELECT * FROM commands WHERE id = ?", (row["id"],)).fetchone()
+
+
+def finish_command(conn: sqlite3.Connection, command_id: int, ok: bool, result: str = "") -> None:
+    conn.execute(
+        "UPDATE commands SET status = ?, finished_at = ?, result = ? WHERE id = ?",
+        ("done" if ok else "failed", utcnow(), result[:2000], command_id),
+    )
+    conn.commit()
+
+
+def recent_commands(conn: sqlite3.Connection, limit: int = 20) -> list[sqlite3.Row]:
+    return conn.execute(
+        "SELECT * FROM commands ORDER BY id DESC LIMIT ?", (limit,)
+    ).fetchall()
+
+
+def reset_stale_commands(conn: sqlite3.Connection) -> int:
+    """A command left "running" means the daemon died mid-command."""
+    cur = conn.execute(
+        "UPDATE commands SET status = 'failed', finished_at = ?, "
+        "result = 'the daemon stopped while this was running' "
+        "WHERE status = 'running'", (utcnow(),))
+    conn.commit()
+    return cur.rowcount
+
+
+def get_state(conn: sqlite3.Connection, key: str, default: str | None = None) -> str | None:
+    row = conn.execute("SELECT value FROM app_state WHERE key = ?", (key,)).fetchone()
+    return row["value"] if row else default
+
+
+def set_state(conn: sqlite3.Connection, key: str, value: str) -> None:
+    conn.execute(
+        "INSERT INTO app_state (key, value, set_at) VALUES (?, ?, ?) "
+        "ON CONFLICT(key) DO UPDATE SET value = excluded.value, set_at = excluded.set_at",
+        (key, value, utcnow()),
+    )
+    conn.commit()
+
+
+def is_paused(conn: sqlite3.Connection) -> bool:
+    return get_state(conn, "paused", "0") == "1"
 
 
 # --- market comparisons -----------------------------------------------------

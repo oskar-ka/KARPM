@@ -137,6 +137,7 @@ karpm trial --url ... # dry run: scrape and parse only, no scoring or email
 karpm run             # scrape, then score and send any instant alerts
 karpm digest          # send the digest (--dry-run to see what would go out)
 karpm daemon          # run continuously on the configured schedule
+karpm web             # the web UI on http://127.0.0.1:8080
 ```
 
 Other commands: `trial`, `scrape`, `score`, `images`, `stats`, `top`, `score-one`,
@@ -149,11 +150,29 @@ redirects, size, and whether the body looks like a block page.
 `karpm score-one <id> --show-prompt` prints the exact prompt for a listing
 without calling the API — the fastest way to tune `preferences.md`.
 
-On the Pi, install `deploy/karpm.service` (edit the paths), then:
+On the Pi, install `deploy/karpm.service` and `deploy/karpm-web.service` (edit
+the paths in both), then:
 
 ```bash
-sudo systemctl daemon-reload && sudo systemctl enable --now karpm
+sudo systemctl daemon-reload
+sudo systemctl enable --now karpm karpm-web
 journalctl -u karpm -f
+```
+
+## The web UI
+
+`karpm web` serves a page with the daemon's status, a sortable and filterable
+table of every listing, a page per listing with its photos, price history and
+scores, and editors for the searches, `preferences.md` and `config.toml`.
+Buttons queue a scrape, a digest or a re-score, and pause the schedule.
+
+It is a separate process that shares only the database with the daemon, so the
+UI holds no privilege the daemon has, and restarting either one leaves the other
+alone. It binds to localhost and **has no login** — from a laptop, tunnel in
+rather than binding wider:
+
+```bash
+ssh -N -L 8080:localhost:8080 pi@raspberrypi.local   # then http://localhost:8080
 ```
 
 ## Email
@@ -197,6 +216,7 @@ person browsing for an hour. Speeding this up is how you get blocked.
 - [`docs/COMMANDS.md`](docs/COMMANDS.md) — every command and flag.
 - [`docs/DATABASE.md`](docs/DATABASE.md) — what is stored, how a save works,
   how to query it, and how to browse it without writing SQL.
+- [`docs/COMMANDS.md#web`](docs/COMMANDS.md#web) — the web UI in detail.
 
 ## Tests
 

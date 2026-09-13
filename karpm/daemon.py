@@ -7,14 +7,21 @@ daemon does not re-run a slot it already completed after a crash.
 
 from __future__ import annotations
 
+import json
 import logging
 import signal
+import threading
 import time
 from datetime import date, datetime, timedelta
 
 from . import db, pipeline
+from .config import load_config
 
 log = logging.getLogger(__name__)
+
+# How often the heartbeat is written. The web UI calls the daemon dead after
+# web.HEARTBEAT_STALE_AFTER, so this has to be comfortably shorter than that.
+HEARTBEAT_EVERY_S = 30
 
 _stop = False
 
@@ -57,16 +64,100 @@ def _ran_today(conn, kind: str, slot: datetime) -> bool:
     return last.replace(tzinfo=None) >= slot
 
 
-def run_forever(conf, conn, poll_seconds: int = 30) -> None:
+def run_command(conf, conn, row) -> tuple[bool, str]:
+    """Carry out one thing the web UI asked for."""
+    params = json.loads(row["params_json"] or "{}")
+    command = row["command"]
+    if command == "scrape":
+        return True, json.dumps(pipeline.run_once(conf, conn))
+    if command == "digest":
+        provider_id = pipeline.run_digest(conf, conn)
+        return True, f"sent: {provider_id}" if provider_id else "nothing new to send"
+    if command == "rescore":
+        if params.get("all"):
+            # Forget the old verdicts so every listing is scored again.
+            conn.execute("DELETE FROM scores")
+            conn.commit()
+        result = pipeline.run_scoring_and_alerts(conf, conn)
+        return True, json.dumps(result)
+    return False, f"unknown command {command!r}"
+
+
+def _handle_pending_command(conf, conn) -> bool:
+    """Run one queued command, if there is one. True if something ran."""
+    row = db.claim_command(conn)
+    if row is None:
+        return False
+    log.info("running queued command %s (#%s)", row["command"], row["id"])
+    try:
+        ok, result = run_command(conf, conn, row)
+    except Exception as exc:
+        log.exception("queued command %s failed", row["command"])
+        db.finish_command(conn, row["id"], False, f"{type(exc).__name__}: {exc}")
+        return True
+    db.finish_command(conn, row["id"], ok, result)
+    log.info("command %s finished: %s", row["command"], result[:200])
+    return True
+
+
+def _beat(db_path, stop: threading.Event, every: int = HEARTBEAT_EVERY_S) -> None:
+    """Write the heartbeat on its own connection until asked to stop.
+
+    It is a thread rather than a line in the main loop because a scrape or a
+    scoring run holds that loop for an hour at a time, and a heartbeat that
+    stops whenever the daemon is busiest would tell the web UI it had died
+    exactly when it was working hardest.
+    """
+    conn = db.connect(db_path)
+    try:
+        while True:
+            try:
+                db.set_state(conn, "heartbeat", db.utcnow())
+            except Exception:               # a locked database is not fatal here
+                log.debug("heartbeat write failed", exc_info=True)
+            if stop.wait(every):
+                return
+    finally:
+        conn.close()
+
+
+def run_forever(conf, conn, poll_seconds: int = 30, config_path: str | None = None) -> None:
     signal.signal(signal.SIGTERM, _handle_signal)
     signal.signal(signal.SIGINT, _handle_signal)
 
-    scrape_times = _parse_times(conf.schedule.scrape_at)
-    digest_times = _parse_times(conf.schedule.digest_at)
+    # A command still marked running means we died holding it.
+    stale = db.reset_stale_commands(conn)
+    if stale:
+        log.warning("marked %s interrupted command(s) as failed", stale)
+
     log.info("daemon started - scraping at %s, digest at %s",
              conf.schedule.scrape_at, conf.schedule.digest_at)
 
+    stop_beating = threading.Event()
+    beat = threading.Thread(target=_beat, args=(conf.db_path, stop_beating),
+                            name="karpm-heartbeat", daemon=True)
+    beat.start()
+
     while not _stop:
+        # Reread the config each cycle so edits made in the web UI take effect
+        # without a restart.
+        if config_path:
+            try:
+                conf = load_config(config_path)
+            except Exception as exc:
+                log.error("could not reload %s, keeping the previous config: %s",
+                          config_path, exc)
+
+        scrape_times = _parse_times(conf.schedule.scrape_at)
+        digest_times = _parse_times(conf.schedule.digest_at)
+
+        if _handle_pending_command(conf, conn):
+            continue                      # look for the next one straight away
+
+        if db.is_paused(conn):
+            _sleep(poll_seconds)
+            continue
+
         now = datetime.now()
         today = date.today()
 
@@ -91,13 +182,20 @@ def run_forever(conf, conn, poll_seconds: int = 30) -> None:
                     log.exception("digest failed")
                 break
 
-        next_scrape = _next_fire(scrape_times, datetime.now())
-        next_digest = _next_fire(digest_times, datetime.now())
-        log.debug("next scrape %s, next digest %s", next_scrape, next_digest)
+        db.set_state(conn, "next_scrape", _next_fire(scrape_times, datetime.now()).isoformat())
+        db.set_state(conn, "next_digest", _next_fire(digest_times, datetime.now()).isoformat())
+        _sleep(poll_seconds)
 
-        for _ in range(poll_seconds):
-            if _stop:
-                break
-            time.sleep(1)
-
+    stop_beating.set()
+    beat.join(timeout=5)
+    # One last beat, so the UI shows when it stopped rather than a stale time.
+    db.set_state(conn, "heartbeat", db.utcnow())
     log.info("daemon stopped")
+
+
+def _sleep(seconds: int) -> None:
+    """Sleep in one-second steps so a signal is noticed promptly."""
+    for _ in range(seconds):
+        if _stop:
+            return
+        time.sleep(1)

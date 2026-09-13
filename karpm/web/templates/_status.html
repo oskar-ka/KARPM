@@ -1,0 +1,18 @@
+<div class="panel">
+  <h2>
+    <span class="dot {{ 'ok' if alive else 'bad' }}"></span>
+    daemon {{ 'running' if alive else 'not responding' }}
+    {% if paused %}<span class="tag warn">schedule paused</span>{% endif %}
+    {% if running %}<span class="tag">busy: {{ running.command }}</span>{% endif %}
+  </h2>
+  <dl class="kv">
+    <dt>last heartbeat</dt><dd>{{ heartbeat or 'never' }}</dd>
+    {% if running %}
+      <dt>busy since</dt><dd>{{ running.started_at }} ({{ running.command }})</dd>
+    {% endif %}
+    <dt>next scrape</dt><dd>{{ next_scrape or '-' }}</dd>
+    <dt>next digest</dt><dd>{{ next_digest or '-' }}</dd>
+    <dt>listings</dt><dd>{{ counts.total or 0 }} ({{ counts.active or 0 }} active,
+      {{ counts.unscored or 0 }} unscored)</dd>
+  </dl>
+</div>

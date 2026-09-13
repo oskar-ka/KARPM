@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% block body %}
+<div data-poll="{{ url_for('status_fragment') }}" data-every="10">
+  {% include "_status.html" %}
+</div>
+
+<div class="panel">
+  <h2>controls</h2>
+  <form method="post" action="{{ url_for('control', action='scrape') }}" class="inline">
+    <button>scrape now</button></form>
+  <form method="post" action="{{ url_for('control', action='digest') }}" class="inline">
+    <button>send digest</button></form>
+  <form method="post" action="{{ url_for('control', action='rescore') }}" class="inline">
+    <button>score new listings</button></form>
+  <form method="post" action="{{ url_for('control', action='rescore') }}" class="inline"
+        onsubmit="return confirm('Re-score every listing? This spends Claude API credits.')">
+    <input type="hidden" name="all" value="1">
+    <button class="danger">re-score everything</button></form>
+  {% if paused %}
+    <form method="post" action="{{ url_for('control', action='resume') }}" class="inline">
+      <button>resume schedule</button></form>
+  {% else %}
+    <form method="post" action="{{ url_for('control', action='pause') }}" class="inline">
+      <button>pause schedule</button></form>
+  {% endif %}
+</div>
+
+<div class="cols">
+  <div class="panel">
+    <h2>recent runs</h2>
+    <table class="dense">
+      <tr><th>kind</th><th>started</th><th>ok</th><th>new</th><th>scored</th></tr>
+      {% for run in runs %}
+      <tr><td>{{ run.kind }}</td><td>{{ run.started_at[:16] if run.started_at }}</td>
+        <td>{% if run.ok %}yes{% elif run.finished_at %}<span class="bad-text">no</span>
+            {% else %}running{% endif %}</td>
+        <td>{{ run.listings_new or 0 }}</td><td>{{ run.scored or 0 }}</td></tr>
+      {% else %}<tr><td colspan="5">nothing yet</td></tr>{% endfor %}
+    </table>
+  </div>
+
+  <div class="panel">
+    <h2>queued commands</h2>
+    <table class="dense">
+      <tr><th>command</th><th>asked</th><th>status</th><th>result</th></tr>
+      {% for c in commands %}
+      <tr><td>{{ c.command }}</td><td>{{ c.requested_at[11:16] }}</td>
+        <td class="{{ 'bad-text' if c.status == 'failed' }}">{{ c.status }}</td>
+        <td class="truncate">{{ c.result or '' }}</td></tr>
+      {% else %}<tr><td colspan="4">none</td></tr>{% endfor %}
+    </table>
+  </div>
+</div>
+
+<div class="panel">
+  <h2>searches</h2>
+  <table class="dense">
+    <tr><th>name</th><th>last run</th><th>status</th></tr>
+    {% for s in searches %}
+    <tr><td>{{ s.name }}{% if not s.enabled %} <span class="tag">off</span>{% endif %}</td>
+      <td>{{ s.last_run_at[:16] if s.last_run_at else '-' }}</td>
+      <td>{{ s.last_status or '-' }}</td></tr>
+    {% endfor %}
+  </table>
+</div>
+{% endblock %}

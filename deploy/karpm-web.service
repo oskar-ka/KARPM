@@ -1,0 +1,31 @@
+# The web UI, as its own service alongside karpm.service. Install to
+# /etc/systemd/system/karpm-web.service, then:
+#   sudo systemctl daemon-reload && sudo systemctl enable --now karpm-web
+#
+# It is a separate unit on purpose: the two processes meet only in the
+# database, so restarting the UI never interrupts a scrape, and a crash in
+# either one leaves the other running.
+[Unit]
+Description=KARPM web UI
+After=network.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/KARPM
+ExecStart=/home/pi/KARPM/.venv/bin/karpm web
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+# Basic hardening. Unlike the daemon this one also writes config.toml and
+# preferences.md, so the whole project directory has to be writable.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/pi/KARPM
+
+[Install]
+WantedBy=multi-user.target

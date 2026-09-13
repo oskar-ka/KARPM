@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block body %}
+<h1>searches</h1>
+<p class="sub">Build a search in your browser with the filters you want, then paste the URL
+  here. Name the model: ads carry a <em>Marke</em> but no <em>Modell</em>, and without it
+  listings cannot be grouped into price comparables.</p>
+
+<form method="post" action="{{ url_for('save_searches') }}">
+  <table class="dense searches">
+    <tr><th>on</th><th>name</th><th>url</th><th>make</th><th>model</th><th>max ads</th></tr>
+    {% for s in searches %}
+    <tr>
+      <td><input type="checkbox" name="enabled-{{ loop.index0 }}" value="1"
+                 {{ 'checked' if s.enabled }}></td>
+      <td><input name="name-{{ loop.index0 }}" value="{{ s.name }}" required></td>
+      <td><input name="url-{{ loop.index0 }}" value="{{ s.url }}" class="wide" required></td>
+      <td><input name="make-{{ loop.index0 }}" value="{{ s.make or '' }}"></td>
+      <td><input name="model-{{ loop.index0 }}" value="{{ s.model or '' }}"></td>
+      <td><input name="max_ads-{{ loop.index0 }}" value="{{ s.max_ads or '' }}" size="5"></td>
+    </tr>
+    {% endfor %}
+    {% set next = searches | length %}
+    <tr class="new">
+      <td><input type="checkbox" name="enabled-{{ next }}" value="1" checked></td>
+      <td><input name="name-{{ next }}" placeholder="new search"></td>
+      <td><input name="url-{{ next }}" class="wide" placeholder="https://www.kleinanzeigen.de/s-…"></td>
+      <td><input name="make-{{ next }}"></td>
+      <td><input name="model-{{ next }}"></td>
+      <td><input name="max_ads-{{ next }}" size="5"></td>
+    </tr>
+  </table>
+  <p><button>save searches</button>
+     <span class="muted">clearing a name and url removes that row</span></p>
+</form>
+{% endblock %}

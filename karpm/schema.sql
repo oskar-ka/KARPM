@@ -138,6 +138,30 @@ CREATE TABLE IF NOT EXISTS runs (
     error         TEXT
 );
 
+-- Work the web UI asks the daemon to do. Going through the database means the
+-- web process needs no privileges, cannot crash the daemon, and behaves the
+-- same whether it is reached over localhost or a VPN.
+CREATE TABLE IF NOT EXISTS commands (
+    id           INTEGER PRIMARY KEY,
+    command      TEXT NOT NULL,              -- scrape | digest | rescore
+    params_json  TEXT,
+    requested_at TEXT NOT NULL,
+    status       TEXT NOT NULL DEFAULT 'pending',  -- pending | running | done | failed
+    started_at   TEXT,
+    finished_at  TEXT,
+    result       TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_commands_pending ON commands(status, id);
+
+-- Small key/value store for things that are settings rather than events, such
+-- as whether the schedule is paused.
+CREATE TABLE IF NOT EXISTS app_state (
+    key     TEXT PRIMARY KEY,
+    value   TEXT,
+    set_at  TEXT NOT NULL
+);
+
 -- Current score per listing, for convenient querying. Recreated on every init
 -- so the column list always matches this file.
 DROP VIEW IF EXISTS listing_current;

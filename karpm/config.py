@@ -5,6 +5,8 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+from types import UnionType
+from typing import Union, get_args, get_origin, get_type_hints
 
 try:                                   # tomllib is stdlib from Python 3.11
     import tomllib
@@ -173,6 +175,17 @@ class EmailConfig:
 
 
 @dataclass
+class WebConfig:
+    """The web UI. It binds to localhost by default: reaching it from elsewhere
+    is a question for SSH, Tailscale or a reverse proxy, not for this process.
+    There is no login, so whoever can reach the port can change what the Pi
+    scrapes and spend Claude credits by re-scoring."""
+
+    host: str = "127.0.0.1"
+    port: int = 8080
+
+
+@dataclass
 class ScheduleConfig:
     # Local times (HH:MM) at which the daemon scrapes and mails.
     scrape_at: list[str] = field(default_factory=lambda: ["07:30", "19:30"])
@@ -189,6 +202,7 @@ class Config:
     scoring: ScoringConfig = field(default_factory=ScoringConfig)
     email: EmailConfig = field(default_factory=EmailConfig)
     schedule: ScheduleConfig = field(default_factory=ScheduleConfig)
+    web: WebConfig = field(default_factory=WebConfig)
 
     @property
     def anthropic_api_key(self) -> str | None:
@@ -199,10 +213,68 @@ class Config:
         return os.environ.get("RESEND_API_KEY")
 
 
-def _subset(cls, data: dict):
-    """Build a dataclass from a dict, ignoring unknown keys."""
+class ConfigError(ValueError):
+    """A config file that parses as TOML but is not one KARPM can use."""
+
+
+def _check(section: str, key: str, hint, value):
+    """Verify one value against its declared type.
+
+    Dataclasses do not enforce their annotations, so without this a typo like
+    `min_delay_s = "4"` is accepted here and fails much later somewhere
+    unhelpful - and the web UI's "does this load?" check would pass it.
+    """
+    where = f"{section}.{key}" if section else key
+    origin, args = get_origin(hint), get_args(hint)
+    if origin is Union or origin is UnionType:
+        if value is None and type(None) in args:
+            return None
+        for candidate in (a for a in args if a is not type(None)):
+            try:
+                return _check(section, key, candidate, value)
+            except ConfigError:
+                continue
+        raise ConfigError(f"{where}: expected {hint}, got {value!r}")
+
+    if origin in (list, tuple):
+        if not isinstance(value, (list, tuple)):
+            raise ConfigError(f"{where}: expected a list, got {value!r}")
+        return [_check(section, f"{key}[{i}]", args[0], v) for i, v in enumerate(value)] \
+            if args else list(value)
+
+    if hint is bool:
+        if not isinstance(value, bool):
+            raise ConfigError(f"{where}: expected true or false, got {value!r}")
+        return value
+    if hint is int:
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ConfigError(f"{where}: expected a whole number, got {value!r}")
+        return value
+    if hint is float:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ConfigError(f"{where}: expected a number, got {value!r}")
+        return float(value)
+    if hint is str:
+        if not isinstance(value, str):
+            raise ConfigError(f"{where}: expected text, got {value!r}")
+        return value
+    return value
+
+
+def _subset(cls, data: dict, section: str = ""):
+    """Build a dataclass from a dict, ignoring unknown keys and checking types."""
+    hints = get_type_hints(cls)
     known = {f.name for f in cls.__dataclass_fields__.values()}
-    return cls(**{k: v for k, v in data.items() if k in known})
+    label = section or cls.__name__
+    values = {}
+    for key, value in data.items():
+        if key not in known:
+            continue
+        values[key] = _check(label, key, hints.get(key, object), value)
+    try:
+        return cls(**values)
+    except TypeError as exc:
+        raise ConfigError(f"{label}: {exc}") from exc
 
 
 def load_config(path: Path | str = DEFAULT_CONFIG_PATH) -> Config:
@@ -215,14 +287,17 @@ def load_config(path: Path | str = DEFAULT_CONFIG_PATH) -> Config:
     with path.open("rb") as fh:
         raw = tomllib.load(fh)
 
-    cfg = Config(
-        db_path=raw.get("db_path", Config.db_path),
-        searches=[_subset(SearchConfig, s) for s in raw.get("searches", [])],
-        scrape=_subset(ScrapeConfig, raw.get("scrape", {})),
-        trial=_subset(TrialConfig, raw.get("trial", {})),
-        images=_subset(ImageConfig, raw.get("images", {})),
-        scoring=_subset(ScoringConfig, raw.get("scoring", {})),
-        email=_subset(EmailConfig, raw.get("email", {})),
-        schedule=_subset(ScheduleConfig, raw.get("schedule", {})),
+    db_path = raw.get("db_path", Config.db_path)
+    _check("", "db_path", str, db_path)
+    return Config(
+        db_path=db_path,
+        searches=[_subset(SearchConfig, s, f"searches[{i}]")
+                  for i, s in enumerate(raw.get("searches", []))],
+        scrape=_subset(ScrapeConfig, raw.get("scrape", {}), "scrape"),
+        trial=_subset(TrialConfig, raw.get("trial", {}), "trial"),
+        images=_subset(ImageConfig, raw.get("images", {}), "images"),
+        scoring=_subset(ScoringConfig, raw.get("scoring", {}), "scoring"),
+        email=_subset(EmailConfig, raw.get("email", {}), "email"),
+        schedule=_subset(ScheduleConfig, raw.get("schedule", {}), "schedule"),
+        web=_subset(WebConfig, raw.get("web", {}), "web"),
     )
-    return cfg

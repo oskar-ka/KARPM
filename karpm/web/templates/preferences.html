@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% block body %}
+<h1>preferences</h1>
+<p class="sub">This whole file goes to Claude with every listing. Be concrete, and say what
+  you don't care about as well as what you do. <code>{{ path }}</code></p>
+<form method="post">
+  <textarea name="text" rows="30" spellcheck="false">{{ text }}</textarea>
+  <p><button>save</button>
+     <span class="muted">already-scored listings keep their old verdict until you bump
+       <code>scoring.prompt_version</code> or re-score</span></p>
+</form>
+{% endblock %}

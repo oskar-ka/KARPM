@@ -68,6 +68,7 @@ from a `.env` file in the working directory: `ANTHROPIC_API_KEY` for scoring and
 | [`run`](#run) | yes | **yes** | **yes** |
 | [`digest`](#digest) | no | no | **yes** |
 | [`daemon`](#daemon) | yes | **yes** | **yes** |
+| [`web`](#web) | no (serves locally) | no | no |
 | [`stats`](#stats) | no | no | no |
 | [`top`](#top) | no | no | no |
 
@@ -338,6 +339,59 @@ repeat a slot it already completed. Stops cleanly on `SIGTERM`/`SIGINT`.
 
 ---
 
+## `web`
+
+Serve the web UI: the daemon's status, a sortable listings table, the photos and
+history behind each listing, and editors for the searches, `preferences.md` and
+`config.toml`.
+
+```bash
+karpm web
+```
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--host ADDR` | `web.host`, `127.0.0.1` | Address to bind. |
+| `--port N` | `web.port`, `8080` | Port to listen on. |
+| `--debug` | off | Flask debug mode and the auto-reloader. Development only. |
+
+It is a **separate process from the daemon** and holds no privilege the daemon
+has: the two meet only in the database. The buttons queue a command in the
+`commands` table, and the daemon picks it up on its next poll — within a minute,
+or after whatever it is currently doing finishes.
+
+| Button | What it queues |
+|---|---|
+| `scrape now` | One full scrape — the same work a scheduled slot does. |
+| `send digest` | A digest of everything above `email.digest_min_score`. |
+| `score new listings` | Scoring for anything unscored. **Costs money.** |
+| `re-score everything` | The same, after deleting every existing score. Asks first, and costs a great deal more. |
+| `pause schedule` | Stops the timed slots firing. Queued commands still run, so the buttons keep working. |
+
+Edits to `config.toml` and the searches take effect without a restart — the
+daemon rereads its config every cycle. `config.toml` is only written if it
+parses as TOML *and* loads as a config KARPM can use; if it does not, the
+previous file is restored and the error is shown. A `.bak` is written beside
+any file it changes.
+
+**There is no login.** Bound to `127.0.0.1` that is fine, because only the Pi
+itself can reach it. Reach it from a laptop with an SSH tunnel rather than by
+binding wider:
+
+```bash
+ssh -N -L 8080:localhost:8080 pi@raspberrypi.local   # then open http://localhost:8080
+```
+
+Binding to `0.0.0.0` hands everyone on the network the ability to change what
+you scrape and to spend Claude credits by re-scoring; the command prints a
+warning when you do. `deploy/karpm-web.service` runs it under systemd alongside
+`karpm.service`.
+
+The server is Flask's own, which is right for one person on localhost and not
+meant for anything exposed.
+
+---
+
 ## `stats`
 
 Summarise what has been collected: totals, score distribution, recent price
@@ -373,8 +427,10 @@ karpm top --min-score 4 --limit 20
 | `1` | `raw`: the request itself failed. |
 | `2` | Bad arguments: a missing or contradictory flag, or `--search` naming a search that is not in the config (the message lists the valid names). |
 
-`daemon` only exits on a signal, and exits `0`; per-run failures are logged and
-recorded in the `runs` table rather than ending the process.
+`daemon` and `web` only exit on a signal, and exit `0`. The daemon's per-run
+failures are logged and recorded in the `runs` table rather than ending the
+process; a queued command that fails is recorded in the `commands` table with
+its error.
 
 ## Typical sequences
 
@@ -392,6 +448,7 @@ karpm score-one <id> --show-prompt
 karpm run
 karpm top
 
-# leave it running
+# leave it running, with the web UI alongside it
 sudo systemctl enable --now karpm
+sudo systemctl enable --now karpm-web    # http://localhost:8080 on the Pi
 ```

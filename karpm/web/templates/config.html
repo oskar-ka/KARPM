@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block body %}
+<h1>config</h1>
+<p class="sub">Checked as TOML and loaded as a config before it is written; if either fails
+  nothing changes. The previous version is kept as <code>{{ path.name }}.bak</code>.</p>
+<form method="post">
+  <textarea name="text" rows="34" spellcheck="false" class="mono">{{ text }}</textarea>
+  <p><button>save</button>
+     <span class="muted">the daemon rereads this on its next cycle</span></p>
+</form>
+{% endblock %}

@@ -190,6 +190,43 @@ row the rest are skipped — an ad with broken images has all of them broken.
 Each folder also gets an `ad.txt` naming the listing id, title and URL, so a
 directory of JPEGs is not a dead end without the database.
 
+## Talking to the daemon: `commands` and `app_state`
+
+The web UI (`karpm web`) runs as a separate process from the daemon, and the
+two never talk directly — they meet in these two tables. That is what lets the
+UI ask for a scrape without holding any privilege the daemon has, and why
+restarting one never disturbs the other.
+
+**`commands`** is a queue. The UI inserts a row; the daemon claims the oldest
+pending one on its next poll, runs it, and writes back what happened.
+
+| Column | Meaning |
+|---|---|
+| `command` | `scrape`, `digest` or `rescore` — the set is `db.COMMANDS`. |
+| `params_json` | Options, e.g. `{"all": true}` to re-score from scratch. |
+| `status` | `pending` → `running` → `done` or `failed`. |
+| `requested_at`, `started_at`, `finished_at` | Timestamps for each transition. |
+| `result` | What the run returned, or the exception if it failed. |
+
+A command left `running` means the daemon died holding it, so
+`reset_stale_commands()` marks those `failed` at startup rather than leaving
+them to look busy forever. A failed command keeps its row and its error: a
+request that went nowhere must not look like one that succeeded.
+
+**`app_state`** is a small key/value table for things that are true *now*
+rather than events worth keeping:
+
+| Key | Meaning |
+|---|---|
+| `heartbeat` | Last time the daemon checked in. The UI calls it dead after five minutes. |
+| `paused` | `"1"` while the schedule is paused. Queued commands still run. |
+| `next_scrape`, `next_digest` | When the next slot fires. |
+
+The heartbeat is written by its own thread, every 30 seconds, on its own
+connection — a scrape holds the main loop for an hour at a time, and a
+heartbeat that stopped whenever the daemon was busiest would report it dead
+exactly when it was working hardest.
+
 ## Querying it
 
 It is a plain SQLite file, so `sqlite3`, DB Browser for SQLite or pandas all
@@ -226,8 +263,13 @@ your real market rather than the model's recollection of one.
 
 ## Browsing it without writing SQL
 
-All of these open `data/karpm.db` directly. Reading while the daemon is running
-is safe — WAL mode allows readers and a writer at the same time.
+`karpm web` is the built-in answer: a listings table you can sort and filter, a
+page per listing with its photos, history and scores, and the daemon's status.
+See [COMMANDS.md](COMMANDS.md#web).
+
+The tools below open `data/karpm.db` directly, and show every table rather than
+the curated view. Reading while the daemon is running is safe — WAL mode allows
+readers and a writer at the same time.
 
 **Datasette** — the best fit for a Pi. A local web UI: click a table, sort by
 clicking a column, filter with dropdowns, no SQL anywhere.
@@ -292,6 +334,7 @@ is just running any command — existing rows and their history are preserved.
 |---|---|
 | 1 | Initial schema. |
 | 2 | `listings.delisted_reason`, `missing_since`, `missing_count`, `last_verified_at` — added with delisting verification. |
+| 3 | `commands` and `app_state` — the web UI's queue and the daemon's status, added with `karpm web`. |
 
 ## Changing the schema
 

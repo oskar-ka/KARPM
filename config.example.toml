@@ -115,3 +115,16 @@ skip_empty_digest = true
 # Local time on the Pi. Scrape twice a day, digest once in the morning.
 scrape_at = ["07:30", "19:30"]
 digest_at = ["08:00"]
+
+[web]
+# `karpm web` serves the status page, the listings browser and these settings.
+# It binds to localhost, so only the Pi itself can reach it; get at it from
+# your laptop with an SSH tunnel:
+#
+#     ssh -N -L 8080:localhost:8080 pi@raspberrypi.local
+#
+# then open http://localhost:8080 there. Binding to 0.0.0.0 instead exposes it
+# to everyone on the network, and the page has no login: whoever opens it can
+# change what is scraped and spend Claude credits by re-scoring.
+host = "127.0.0.1"
+port = 8080

@@ -116,7 +116,7 @@ def cmd_run(args) -> int:
 
 def cmd_daemon(args) -> int:
     conf, conn = _open(args)
-    daemon.run_forever(conf, conn)
+    daemon.run_forever(conf, conn, config_path=args.config)
     conn.close()
     return 0
 
@@ -372,6 +372,23 @@ def cmd_trial(args) -> int:
     return 0 if report.ok else 1
 
 
+def cmd_web(args) -> int:
+    """Serve the web UI. Separate process from the daemon; they meet in the db."""
+    from .web import create_app
+
+    conf = load_config(args.config)
+    host = args.host or conf.web.host
+    port = args.port or conf.web.port
+    app = create_app(args.config)
+
+    print(f"KARPM web UI on http://{host}:{port}")
+    if host not in ("127.0.0.1", "localhost"):
+        print("  reachable from the network, and it has no login: anyone who can\n"
+              "  open it can change your searches and spend Claude credits.")
+    app.run(host=host, port=port, debug=args.debug, use_reloader=args.debug)
+    return 0
+
+
 def cmd_images(args) -> int:
     conf, conn = _open(args)
     saved = images.download_pending(conn, Fetcher(conf.scrape), conf.images, limit=args.limit,
@@ -529,6 +546,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_trial.add_argument("--show-prompt", action="store_true",
                          help="also print the scoring prompt for the first listing")
     p_trial.set_defaults(func=cmd_trial)
+
+    p_web = sub.add_parser("web", parents=[pace_parent],
+                           help="serve the web UI (status, listings, config)")
+    p_web.add_argument("--host", help="override web.host from the config")
+    p_web.add_argument("--port", type=int, help="override web.port from the config")
+    p_web.add_argument("--debug", action="store_true", help="Flask debug mode and reloader")
+    p_web.set_defaults(func=cmd_web)
 
     p_images = sub.add_parser(parents=[pace_parent], name="images", help="download images that have no local file yet")
     p_images.add_argument("--limit", type=int, default=500,

@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}KARPM{% endblock %}</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='karpm.css') }}">
+<script src="{{ url_for('static', filename='karpm.js') }}" defer></script>
+</head><body>
+<nav>
+  <a class="brand" href="{{ url_for('dashboard') }}">KARPM</a>
+  <a href="{{ url_for('listings') }}">Listings</a>
+  <a href="{{ url_for('searches') }}">Searches</a>
+  <a href="{{ url_for('preferences') }}">Preferences</a>
+  <a href="{{ url_for('config_page') }}">Config</a>
+</nav>
+{% with messages = get_flashed_messages(with_categories=true) %}
+  {% for category, message in messages %}
+    <p class="flash {{ category }}">{{ message }}</p>
+  {% endfor %}
+{% endwith %}
+<main>{% block body %}{% endblock %}</main>
+</body></html>

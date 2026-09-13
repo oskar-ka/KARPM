@@ -1,0 +1,81 @@
+{% extends "base.html" %}
+{% block title %}{{ row.title }}{% endblock %}
+{% block body %}
+<h1>{{ row.title }}</h1>
+<p class="sub">
+  <a href="{{ row.url }}" target="_blank" rel="noopener">open on Kleinanzeigen ↗</a>
+  · id {{ row.id }}
+  {% if not row.is_active %}<span class="tag warn">delisted {{ row.delisted_at[:10] }}
+    ({{ row.delisted_reason or 'unknown' }})</span>{% endif %}
+</p>
+
+<div class="cols">
+  <div class="panel">
+    <h2>{{ '{:,}'.format(row.price_eur).replace(',', '.') if row.price_eur else 'no price' }} €
+      {% if row.price_kind == 'vb' %}<small>VB</small>{% endif %}</h2>
+    <dl class="kv">
+      {% for label, value in [('mileage', row.km), ('first registration', row.first_reg_date),
+                              ('power', row.hp), ('displacement', row.ccm),
+                              ('HU until', row.inspection_until), ('owners', row.owners),
+                              ('seller', row.seller_type), ('location', row.location),
+                              ('posted', row.posted_at), ('first seen', row.first_seen_at),
+                              ('last seen', row.last_seen_at)] %}
+        {% if value %}<dt>{{ label }}</dt><dd>{{ value }}</dd>{% endif %}
+      {% endfor %}
+    </dl>
+  </div>
+
+  <div class="panel">
+    <h2>score</h2>
+    {% if row.overall %}
+      <p><span class="score s{{ row.overall }}">{{ row.overall }}</span>
+         fit {{ row.fit }}/5 · value {{ row.value }}/5
+         {% if row.fair_price_eur %}· fair price ≈ {{ row.fair_price_eur }} €{% endif %}</p>
+      <p class="headline">{{ row.headline }}</p>
+      <p>{{ row.reasoning }}</p>
+      {% for label, key in [('pros', 'pros_json'), ('cons', 'cons_json'),
+                            ('red flags', 'red_flags_json')] %}
+        {% set items = row[key] | fromjson %}
+        {% if items %}<p class="{{ key }}"><strong>{{ label }}:</strong> {{ items | join('; ') }}</p>{% endif %}
+      {% endfor %}
+    {% else %}
+      <p class="muted">not scored yet</p>
+    {% endif %}
+  </div>
+</div>
+
+{% if images %}
+<div class="panel">
+  <h2>{{ images | length }} photo(s)</h2>
+  <div class="gallery">
+    {% for image in images %}
+      {% if image.local_path %}
+        <a href="{{ url_for('photo', listing_id=row.id, position=image.position) }}">
+          <img loading="lazy" src="{{ url_for('photo', listing_id=row.id, position=image.position) }}" alt=""></a>
+      {% endif %}
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
+
+<div class="panel">
+  <h2>description</h2>
+  <pre class="description">{{ row.description }}</pre>
+</div>
+
+<div class="cols">
+  <div class="panel">
+    <h2>attributes</h2>
+    <dl class="kv">{% for k, v in attributes.items() %}<dt>{{ k }}</dt><dd>{{ v }}</dd>{% endfor %}</dl>
+  </div>
+  <div class="panel">
+    <h2>history</h2>
+    <table class="dense">
+      {% for h in history %}
+      <tr><td>{{ h.observed_at[:16] }}</td><td>{{ h.event }}</td>
+        <td>{% if h.prev_price_eur %}{{ h.prev_price_eur }} → {{ h.price_eur }}{% endif %}</td></tr>
+      {% endfor %}
+    </table>
+  </div>
+</div>
+{% endblock %}

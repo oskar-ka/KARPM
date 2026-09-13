@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+{% macro sortlink(col, label) %}
+  {% set d = 'asc' if filters.sort == col and filters.dir == 'desc' else 'desc' %}
+  <a href="{{ url_for('listings', **dict(request.args, sort=col, dir=d)) }}">{{ label }}{%
+    if filters.sort == col %}<span class="caret">{{ '▾' if filters.dir == 'desc' else '▴' }}</span>{% endif %}</a>
+{% endmacro %}
+{% block body %}
+<form class="filters" method="get">
+  <input name="q" value="{{ filters.q }}" placeholder="title, description or id">
+  <select name="state">
+    {% for value, label in [('active','active'),('unscored','unscored'),
+                            ('delisted','delisted'),('all','all')] %}
+      <option value="{{ value }}" {{ 'selected' if filters.state == value }}>{{ label }}</option>
+    {% endfor %}
+  </select>
+  <input name="min_score" type="number" min="1" max="5" value="{{ filters.min_score or '' }}"
+         placeholder="min score">
+  <input name="max_price" type="number" value="{{ filters.max_price or '' }}" placeholder="max €">
+  <input name="max_km" type="number" value="{{ filters.max_km or '' }}" placeholder="max km">
+  <button>filter</button>
+  <a class="clear" href="{{ url_for('listings') }}">clear</a>
+  <span class="count">{{ total }} listing(s)</span>
+</form>
+
+<table class="dense listings">
+  <thead><tr>
+    <th></th>
+    {% for col, label in columns %}<th>{{ sortlink(col, label) }}</th>{% endfor %}
+  </tr></thead>
+  <tbody>
+  {% for row in rows %}
+    <tr class="{{ 'delisted' if not row.is_active }}">
+      <td class="thumb">
+        <a href="{{ url_for('listing', listing_id=row.id) }}">
+          <img loading="lazy" src="{{ url_for('photo', listing_id=row.id, position=0) }}"
+               onerror="this.style.visibility='hidden'" alt=""></a></td>
+      <td>{% if row.overall %}<span class="score s{{ row.overall }}">{{ row.overall }}</span>{% endif %}</td>
+      <td class="num">{{ '{:,}'.format(row.price_eur).replace(',', '.') if row.price_eur }}</td>
+      <td class="num">{{ '{:,}'.format(row.km).replace(',', '.') if row.km }}</td>
+      <td class="num">{{ row.first_reg_year or '' }}</td>
+      <td class="num">{{ row.hp or '' }}</td>
+      <td>{{ row.inspection_until[:7] if row.inspection_until else '' }}</td>
+      <td>{{ row.seller_type or '' }}</td>
+      <td class="truncate">{{ row.location or '' }}</td>
+      <td>{{ row.first_seen_at[:10] }}</td>
+      <td><a href="{{ url_for('listing', listing_id=row.id) }}">{{ row.title }}</a></td>
+    </tr>
+  {% else %}
+    <tr><td colspan="11">nothing matches</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+
+{% if total > rows|length %}
+<p class="pager">
+  {% if filters.page > 1 %}
+    <a href="{{ url_for('listings', **dict(request.args, page=filters.page - 1)) }}">← previous</a>
+  {% endif %}
+  page {{ filters.page }}
+  {% if filters.page * 100 < total %}
+    <a href="{{ url_for('listings', **dict(request.args, page=filters.page + 1)) }}">next →</a>
+  {% endif %}
+</p>
+{% endif %}
+{% endblock %}
