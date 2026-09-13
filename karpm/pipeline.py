@@ -219,14 +219,21 @@ def scrape_search(conn, cfg, fetcher: Fetcher, search, mark_missing: bool = True
 
     seen_ids = {item["id"] for item in plan.items}
 
+    short: list[tuple[str, int, int]] = []
+
     for item in plan.unchanged:
         db.touch_listing(conn, item["id"])
 
     for index, item in enumerate(plan.to_fetch, start=1):
         log.info("[%s] ad %s/%s: %s %s", search.name, index, len(plan.to_fetch),
                  item["id"], (item.get("title") or "")[:50])
-        outcome, stored_id = _fetch_and_store(conn, cfg, fetcher, item, search,
-                                              referer=search.url)
+        outcome, stored_id, photos = _fetch_and_store(conn, cfg, fetcher, item, search,
+                                                      referer=search.url)
+        # The search page already said how many photos this ad has. Finding far
+        # fewer on the ad page means the gallery is not where we looked.
+        promised = item.get("image_count")
+        if promised and photos < min(promised, cfg.images.max_per_listing or promised):
+            short.append((item["id"], promised, photos))
         # The ad page is the authority on its own id; record that too, so a
         # listing is never reported missing just because the two disagree.
         if stored_id:
@@ -239,6 +246,18 @@ def scrape_search(conn, cfg, fetcher: Fetcher, search, mark_missing: bool = True
             conn.commit()
 
     conn.commit()
+
+    if short:
+        expected = sum(p for _, p, _ in short)
+        found = sum(f for _, _, f in short)
+        log.warning(
+            "%s ad(s) yielded fewer photos than their search listing advertised "
+            "(%s expected, %s found). The gallery markup may have changed - "
+            "`karpm probe --url %s` shows what the parser sees.",
+            len(short), expected, found,
+            next(iter(i["url"] for i in plan.to_fetch if i["id"] == short[0][0]), ""),
+        )
+    counts["photos_short"] = len(short)
 
     if mark_missing and plan.truncated:
         log.info("[%s] skipping the delisting check - the run stopped early, so an ad's "
@@ -254,7 +273,7 @@ def _fetch_and_store(conn, cfg, fetcher, item, search, referer=None) -> tuple[st
         html = fetcher.get(item["url"], referer=referer)
     except FileNotFoundError:
         log.info("listing %s is already gone (404)", item["id"])
-        return "gone", None
+        return "gone", None, 0
     return _store_detail(conn, cfg, html, item, search)
 
 
@@ -286,7 +305,7 @@ def _store_detail(conn, cfg, html, item, search) -> tuple[str, str]:
 
     if data.get("parse_warnings"):
         log.debug("listing %s parse warnings: %s", data["id"], data["parse_warnings"])
-    return outcome, data["id"]
+    return outcome, data["id"], len(image_urls)
 
 
 def reconcile_missing(conn, cfg, fetcher, search, seen_ids: set[str]) -> dict:

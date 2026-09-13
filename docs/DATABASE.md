@@ -161,6 +161,17 @@ itself goes to `data/images/<ad_id>/<position>_<hash>.jpg`. Keeping the bytes
 means a listing stays reviewable after it is taken down — which is exactly when
 you most want to compare it against what is on the market now.
 
+**Where the URLs come from.** An ad page lists its gallery twice: as `<img>`
+elements, and as JSON-LD `ImageObject` blocks. Both are read and merged, keyed
+on the photo's path so the same image is not collected once per rendition.
+Reading only the first source that matched anything meant a page whose
+`#viewad-image` is just the main photo yielded exactly one image per ad.
+Anything inside an `article[data-adid]` is skipped — those are the "similar
+ads" cards showing other people's bikes.
+
+The search page states each ad's photo count on its thumbnail, so a run that
+finds far fewer on the ad page says so rather than quietly fetching a fraction.
+
 **Renditions.** The CDN serves each photo under a `rule` naming a size and
 format: the gallery links `$_59.AUTO`, while the page's own JSON-LD links
 `$_59.JPG` for the same image. Not every rendition exists for every photo, so a

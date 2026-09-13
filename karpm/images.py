@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import time
 from collections import Counter
 from pathlib import Path
 
@@ -65,15 +66,29 @@ def download_pending(conn, fetcher, cfg, limit: int | None = None,
     failures: Counter[str] = Counter()
     abandoned: set[str] = set()
     rows = db.pending_images(conn, limit=limit)
-    if rows:
-        pace = delay_range or (1.0, 1.0)
-        log.info("downloading %s image(s), roughly %.0fs",
-                 len(rows), len(rows) * sum(pace) / 2)
+    if not rows:
+        return 0
+
+    by_listing: dict[str, int] = Counter(r["listing_id"] for r in rows)
+    log.info("downloading %s photo(s) across %s ad(s)", len(rows), len(by_listing))
+
+    started = time.monotonic()
+    attempted = 0
+    current: str | None = None
     per_listing: dict[str, int] = {}
     for row in rows:
         listing_id = row["listing_id"]
         if listing_id in abandoned:
             continue
+
+        if listing_id != current:
+            current = listing_id
+            remaining = len(rows) - attempted - by_listing[listing_id]
+            title = (row["listing_title"] or "")[:40] if "listing_title" in row.keys() else ""
+            log.info("  %s photo(s) of %s %s - %s to go%s",
+                     by_listing[listing_id], listing_id, title, max(remaining, 0),
+                     _eta(started, attempted, len(rows)))
+        attempted += 1
         per_listing[listing_id] = per_listing.get(listing_id, 0) + 1
         if cfg.max_per_listing is not None and per_listing[listing_id] > cfg.max_per_listing:
             continue
@@ -109,8 +124,7 @@ def download_pending(conn, fetcher, cfg, limit: int | None = None,
 
         db.record_image_download(conn, row["id"], str(target), digest, len(data))
         saved += 1
-        if saved % 10 == 0:
-            log.info("  ... %s/%s images", saved, len(rows))
+        if saved % 25 == 0:
             conn.commit()
 
     conn.commit()
@@ -121,6 +135,23 @@ def download_pending(conn, fetcher, cfg, limit: int | None = None,
         log.info("%s photo(s) needed a different rendition than the one linked (%s)",
                  sum(fallbacks.values()), summary)
     return saved
+
+
+def _eta(started: float, done: int, total: int) -> str:
+    """Time remaining, measured rather than assumed.
+
+    The delay between requests is only part of what a download costs - the
+    transfer itself is the rest - so the estimate comes from the rate actually
+    achieved so far, and says nothing until there is enough of it to mean
+    something.
+    """
+    if done < 5:
+        return ""
+    rate = done / max(time.monotonic() - started, 0.001)
+    remaining = (total - done) / rate if rate else 0
+    if remaining < 90:
+        return f", about {remaining:.0f}s left"
+    return f", about {remaining / 60:.0f} min left"
 
 
 def _write_backlink(folder: Path, row) -> None:

@@ -62,6 +62,19 @@ def _first_text(soup, selectors) -> str | None:
     return None
 
 
+def _jsonld_with_tags(soup):
+    """JSON-LD blocks paired with the script tag they came from, so callers can
+    tell where in the page a block sits."""
+    for tag in soup.find_all("script", attrs={"type": "application/ld+json"}):
+        try:
+            data = json.loads(tag.string or tag.get_text() or "")
+        except (json.JSONDecodeError, TypeError):
+            continue
+        for block in (data if isinstance(data, list) else [data]):
+            if isinstance(block, dict):
+                yield block, tag
+
+
 def _jsonld(soup) -> list[dict]:
     blocks = []
     for tag in soup.find_all("script", attrs={"type": "application/ld+json"}):
@@ -226,19 +239,48 @@ def _tags(soup, known: dict[str, str]) -> list[str]:
 
 
 def _images(soup, base_url: str) -> list[str]:
+    """Every photo of this ad, from both places the page lists them.
+
+    Two rules matter here. Collect from *all* the selectors rather than stopping
+    at the first that matches: where "#viewad-image" is only the main photo and
+    the rest of the gallery sits under different markup, stopping early yields
+    exactly one image per ad. And ignore anything inside an article[data-adid],
+    because those are the "similar ads" cards showing other people's bikes.
+
+    The page's own JSON-LD lists the gallery as ImageObject blocks. Those are
+    server-rendered and come first, so they win when the same photo appears
+    twice under different renditions.
+    """
     urls: list[str] = []
+    seen_photos: set[str] = set()
+
+    def add(raw_url: str | None) -> None:
+        if not raw_url or raw_url.startswith("data:"):
+            return
+        full = urljoin(base_url, raw_url)
+        # The same photo is offered under several "rule" renditions; key on the
+        # path so it is not collected once per rendition.
+        photo = full.partition("?")[0]
+        if photo in seen_photos:
+            return
+        seen_photos.add(photo)
+        urls.append(full)
+
+    for block, tag in _jsonld_with_tags(soup):
+        if block.get("@type") != "ImageObject":
+            continue
+        if tag.find_parent("article", attrs={"data-adid": True}) is not None:
+            continue                        # a similar-ads card, not this ad
+        add(block.get("contentUrl"))
+
     for selector in IMAGE_SELECTORS:
         for node in soup.select(selector):
-            src = (node.get("src") or node.get("data-imgsrc") or node.get("data-src")
-                   or node.get("content"))
-            if not src or src.startswith("data:"):
+            if node.find_parent("article", attrs={"data-adid": True}) is not None:
                 continue
-            full = urljoin(base_url, src)
-            if full not in urls:
-                urls.append(full)
-        if urls:
-            break
-    # Kleinanzeigen serves several sizes; prefer the largest known variant.
+            add(node.get("src") or node.get("data-imgsrc") or node.get("data-src")
+                or node.get("content"))
+
+    # The old CDN encoded the size in the filename; harmless on current URLs.
     return [re.sub(r"_(\d+)\.(jpg|jpeg|png|webp)$", r"_57.\2", u) for u in urls]
 
 

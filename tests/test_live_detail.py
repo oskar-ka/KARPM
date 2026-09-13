@@ -159,3 +159,36 @@ def test_a_different_ad_at_the_same_url_is_unknown():
     from karpm.parse.detail import UNKNOWN, classify_ad_page
     html = (FIXTURES / FIXED[0]).read_text(encoding="utf-8")
     assert classify_ad_page(html, FIXED[1], expected_id="9999999999") == UNKNOWN
+
+
+# --- the whole gallery, not just the first photo -------------------------------
+
+def test_all_gallery_photos_are_collected(fixed, vb):
+    """Collection used to stop at the first selector that matched anything. On
+    a page where "#viewad-image" is only the main photo, that yielded exactly
+    one image per ad - and the run quietly fetched a fraction of the photos."""
+    assert len(fixed["image_urls"]) == 13
+    assert len(vb["image_urls"]) == 8
+
+
+def test_photos_are_not_collected_once_per_rendition(fixed):
+    """The same photo is linked as both $_59.JPG and $_59.AUTO."""
+    photos = [u.partition("?")[0] for u in fixed["image_urls"]]
+    assert len(photos) == len(set(photos))
+
+
+def test_similar_ads_photos_are_not_collected(fixed):
+    """The page carries a 'similar ads' block full of other people's bikes,
+    each with its own ImageObject and thumbnail."""
+    from bs4 import BeautifulSoup
+    soup = BeautifulSoup((FIXTURES / FIXED[0]).read_text(encoding="utf-8"), "lxml")
+    other_ads = {img.get("src", "").partition("?")[0]
+                 for article in soup.select("article[data-adid]")
+                 for img in article.select("img")}
+    collected = {u.partition("?")[0] for u in fixed["image_urls"]}
+    assert not (collected & {u for u in other_ads if u}), "a similar ad's photo leaked in"
+
+
+def test_the_json_ld_rendition_is_preferred(fixed):
+    """It is server-rendered and it is the rendition the page itself cites."""
+    assert all("$_59.JPG" in u for u in fixed["image_urls"])

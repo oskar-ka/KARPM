@@ -206,7 +206,7 @@ def test_candidate_urls_leaves_a_ruleless_url_alone():
 def test_a_missing_rendition_falls_back_instead_of_losing_the_photo(conf, conn):
     """The gallery links $_59.AUTO but that rendition does not always exist;
     the same photo is usually there as $_59.JPG."""
-    class AutoRenditionGone(RealPageFetcher):
+    class LinkedRenditionGone(RealPageFetcher):
         def __init__(self):
             super().__init__()
             self.image_requests = []
@@ -214,18 +214,18 @@ def test_a_missing_rendition_falls_back_instead_of_losing_the_photo(conf, conn):
         def get(self, url, referer=None, binary=False, delay_range=None):
             if binary:
                 self.image_requests.append(url)
-                if "$_59.AUTO" in url:
+                if "$_59.JPG" in url:          # the rendition the page links
                     raise FileNotFoundError(f"404 for {url}")
                 return b"\xff\xd8\xff" + b"0" * 64
             return super().get(url, referer=referer, binary=binary)
 
-    fetcher = AutoRenditionGone()
+    fetcher = LinkedRenditionGone()
     report = trial.run_trial(conf, conn, search(), fetcher)
 
     assert report.image_stats["failed"] == 0, "every photo should have been recovered"
     assert report.image_stats["downloaded"] == 20
-    assert any("$_59.AUTO" in u for u in fetcher.image_requests)
-    assert any("$_59.JPG" in u for u in fetcher.image_requests)
+    assert any("$_59.JPG" in u for u in fetcher.image_requests), "the linked one is tried first"
+    assert any("$_59.AUTO" in u for u in fetcher.image_requests), "then an alternative"
 
 
 def test_a_photo_with_no_working_rendition_is_reported_with_its_ad(conf, conn, caplog):
@@ -272,7 +272,7 @@ def test_image_requests_ask_for_images(conf, conn):
 def test_a_working_rendition_is_remembered_for_the_rest_of_the_run(conf, conn):
     """Otherwise a CDN that has dropped one rendition costs a wasted request on
     every single photo."""
-    class AutoAlwaysGone(RealPageFetcher):
+    class LinkedAlwaysGone(RealPageFetcher):
         def __init__(self):
             super().__init__()
             self.image_requests = []
@@ -280,16 +280,16 @@ def test_a_working_rendition_is_remembered_for_the_rest_of_the_run(conf, conn):
         def get(self, url, referer=None, binary=False, delay_range=None):
             if binary:
                 self.image_requests.append(url)
-                if "$_59.AUTO" in url:
+                if "$_59.JPG" in url:
                     raise FileNotFoundError(f"404 for {url}")
                 return b"\xff\xd8\xff" + b"0" * 64
             return super().get(url, referer=referer, binary=binary)
 
-    fetcher = AutoAlwaysGone()
+    fetcher = LinkedAlwaysGone()
     report = trial.run_trial(conf, conn, search(), fetcher)
 
     assert report.image_stats["downloaded"] == 20
-    wasted = [u for u in fetcher.image_requests if "$_59.AUTO" in u]
+    wasted = [u for u in fetcher.image_requests if "$_59.JPG" in u]
     assert len(wasted) == 1, f"the dead rendition was retried {len(wasted)} times"
 
 
@@ -393,3 +393,42 @@ def test_image_folders_carry_a_note_naming_their_ad(conf, conn):
     text = note.read_text(encoding="utf-8")
     assert "3422210980" in text
     assert "kleinanzeigen.de/s-anzeige/" in text
+
+
+ONE_PHOTO_AD = """<html><head>
+<link rel="canonical" href="https://www.kleinanzeigen.de/s-anzeige/x/3422210980-305-6833">
+</head><body>
+<h1 id="viewad-title">BMW R 1200 GS</h1>
+<h2 id="viewad-price">5.900 EUR</h2>
+<div id="viewad-locality">88175 Scheidegg</div>
+<img id="viewad-image" src="https://img.kleinanzeigen.de/api/v1/prod-ads/images/aa/aaaa?rule=$_59.JPG">
+<p id="viewad-description-text">Nur ein Foto.</p>
+</body></html>"""
+
+
+def test_an_ad_yielding_fewer_photos_than_advertised_is_warned_about(conf, conn, caplog):
+    """The search page states each ad's photo count on its thumbnail, so finding
+    far fewer on the ad page means the gallery is not where we looked - which is
+    how a run came to fetch 286 photos when its plan said 2516."""
+    import logging
+
+    class GalleryMissing(RealPageFetcher):
+        def fetch(self, url, referer=None, binary=False, delay_range=None):
+            if "/s-anzeige/" in url and not binary:
+                return Page(ONE_PHOTO_AD, url, 200)
+            return super().fetch(url, referer=referer, binary=binary)
+
+    with caplog.at_level(logging.WARNING):
+        trial.run_trial(conf, conn, search(), GalleryMissing())
+
+    # the first ad's thumbnail advertises 40 photos; the page yields one
+    assert "fewer photos than their search listing advertised" in caplog.text
+    assert "karpm probe --url" in caplog.text
+
+
+def test_no_warning_when_the_gallery_is_all_there(conf, conn, caplog):
+    import logging
+
+    with caplog.at_level(logging.WARNING):
+        trial.run_trial(conf, conn, search(), RealPageFetcher())
+    assert "fewer photos" not in caplog.text
