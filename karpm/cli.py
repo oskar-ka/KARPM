@@ -8,9 +8,9 @@ import logging
 import sys
 from pathlib import Path
 
-from . import daemon, db, images, mailer, pipeline, scoring
-from .config import load_config
-from .http import Fetcher
+from . import daemon, db, images, mailer, pipeline, scoring, trial
+from .config import SearchConfig, load_config
+from .http import Blocked, Fetcher
 from .parse.detail import parse_detail_page
 from .parse.search import parse_search_page
 
@@ -161,6 +161,65 @@ def cmd_score_one(args) -> int:
     return 0
 
 
+def cmd_trial(args) -> int:
+    """Scrape a search into a throwaway database and report what parsed.
+
+    Runs the real fetcher, parsers, storage and image downloads, then stops:
+    no scoring, no Claude API calls, no email.
+    """
+    conf = load_config(args.config)
+
+    if args.url:
+        search = SearchConfig(name="trial", url=args.url, make=args.make, model=args.model,
+                              max_pages=args.pages, max_listings=args.limit)
+    else:
+        configured = {s.name: s for s in conf.searches}
+        if args.search not in configured:
+            print(f"no search named {args.search!r} in {args.config}. "
+                  f"Available: {', '.join(configured) or 'none'}", file=sys.stderr)
+            return 2
+        search = SearchConfig(**{**vars(configured[args.search]),
+                                 "max_pages": args.pages, "max_listings": args.limit})
+
+    conf.db_path = args.db
+    conf.images.dir = args.image_dir
+    conf.images.enabled = not args.no_images
+
+    if not args.keep and Path(args.db).exists():
+        Path(args.db).unlink()
+        for suffix in ("-wal", "-shm"):
+            Path(args.db + suffix).unlink(missing_ok=True)
+        print(f"starting from a clean trial database ({args.db})\n")
+
+    conn = db.connect(conf.db_path)
+    db.init_db(conn)
+
+    print(f"Trial run: {search.url}")
+    print(f"  at most {args.limit} listing(s), {args.pages} page(s); "
+          f"{conf.scrape.min_delay_s:.0f}-{conf.scrape.max_delay_s:.0f}s between requests\n")
+
+    try:
+        report = trial.run_trial(conf, conn, search, download_images=not args.no_images)
+    except Blocked as exc:
+        print(f"\nBLOCKED: {exc}", file=sys.stderr)
+        conn.close()
+        return 1
+
+    note = "  (capped by --limit)" if report.counts.get("capped") else ""
+    print(trial.render(report, limit_note=note))
+
+    if args.show_prompt and report.rows:
+        listing_id = report.rows[0]["id"]
+        row = db.get_listing(conn, listing_id)
+        print("\n" + "=" * 72)
+        print(f"PROMPT THAT WOULD BE SENT FOR {listing_id} (not sent - no API call)")
+        print("=" * 72)
+        print(scoring.listing_to_text(row, db.comparable_stats(conn, row)))
+
+    conn.close()
+    return 0 if report.ok else 1
+
+
 def cmd_images(args) -> int:
     conf, conn = _open(args)
     saved = images.download_pending(conn, Fetcher(conf.scrape), conf.images, limit=args.limit)
@@ -260,6 +319,26 @@ def main(argv: list[str] | None = None) -> int:
     p_one.add_argument("--save", action="store_true", help="store the score")
     p_one.add_argument("--show-prompt", action="store_true", help="print the prompt, don't call the API")
     p_one.set_defaults(func=cmd_score_one)
+
+    p_trial = sub.add_parser(
+        "trial",
+        help="dry run: scrape and parse a search into a throwaway db, no scoring or email")
+    p_trial.add_argument("--url", help="search URL to try (otherwise use --search)")
+    p_trial.add_argument("--search", default="trial",
+                         help="name of a search from config.toml to try instead of --url")
+    p_trial.add_argument("--limit", type=int, default=5,
+                         help="stop after this many listings (default 5 - be kind to the site)")
+    p_trial.add_argument("--pages", type=int, default=1, help="max search pages (default 1)")
+    p_trial.add_argument("--db", default="data/trial.db", help="throwaway database path")
+    p_trial.add_argument("--image-dir", default="data/trial_images")
+    p_trial.add_argument("--make", help="make to record, as in config.toml")
+    p_trial.add_argument("--model", help="model to record, as in config.toml")
+    p_trial.add_argument("--no-images", action="store_true", help="skip image downloads")
+    p_trial.add_argument("--keep", action="store_true",
+                         help="append to the trial database instead of starting clean")
+    p_trial.add_argument("--show-prompt", action="store_true",
+                         help="also print the scoring prompt for the first listing")
+    p_trial.set_defaults(func=cmd_trial)
 
     p_images = sub.add_parser("images", help="download images that have no local file yet")
     p_images.add_argument("--limit", type=int, default=500)

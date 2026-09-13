@@ -54,9 +54,52 @@ Each search should name the model it targets (`make` / `model` in
 `config.toml`). Ads list a *Marke* but no *Modell*, so without it listings
 cannot be grouped into the price comparables the scoring prompt depends on.
 
-### Verify the parsers against the live site first
+### Try it before trusting it
 
-Kleinanzeigen's markup is not a stable API. Before trusting a run:
+`karpm trial` runs the real thing — same fetcher, parsers, storage and image
+downloads — against a throwaway database, then stops. **No scoring, no Claude
+API calls, no email.**
+
+```bash
+karpm trial --url "https://www.kleinanzeigen.de/s-motorraeder-roller/..." \
+            --limit 5 --make BMW --model "R 1200 GS"
+```
+
+It reports what actually parsed, which is the thing worth checking — a scraper
+that returns 25 rows of NULLs still exits successfully:
+
+```
+SEARCH
+  ads on those pages   25   (matched by selector 'article[data-adid]')
+  wanted ads skipped   1    (Gesuch - buyers, not sellers)
+  listings processed   5  (capped by --limit)
+
+LISTINGS
+  id           price      km    EZ   PS       HU  img  title
+  3422210980    4000   66976  2004   98  2028-09   12  BMW R 1200 GS
+
+FIELD COVERAGE  (5 listing(s))
+  km                  4/5   ████████████████      MISSING: 3510866610
+  owners              0/5                         not stated: ...
+
+IMAGES
+  downloaded           43   (18.2 MB, 5 listing(s))
+
+Scoring and email were not run - no Claude API calls, nothing sent.
+VERDICT: problems above - check MISSING fields and warnings
+```
+
+Fields the site simply does not provide are marked *not stated*; fields that
+should have parsed and did not are marked **MISSING**, with the ad URLs so you
+can open one and look. It exits non-zero when a required field is missing, so
+it works in a cron healthcheck too. Add `--show-prompt` to see exactly what
+Claude would be sent for the first listing.
+
+Start small (`--limit 5`) — every listing is a real request to a real site.
+
+### Inspecting a single page
+
+Kleinanzeigen's markup is not a stable API. To look at one page in detail:
 
 ```bash
 karpm probe --url "https://www.kleinanzeigen.de/s-motorraeder-roller/..." --save tests/fixtures/live_search.html
@@ -84,12 +127,14 @@ buy, and they would skew the price comparables that the scoring prompt uses.
 ## Running
 
 ```bash
+karpm trial --url ... # dry run: scrape and parse only, no scoring or email
 karpm run             # scrape, then score and send any instant alerts
 karpm digest          # send the digest (--dry-run to see what would go out)
 karpm daemon          # run continuously on the configured schedule
 ```
 
-Other commands: `scrape`, `score`, `images`, `stats`, `top`, `score-one`, `probe`.
+Other commands: `trial`, `scrape`, `score`, `images`, `stats`, `top`, `score-one`,
+`probe`.
 
 `karpm score-one <id> --show-prompt` prints the exact prompt for a listing
 without calling the API — the fastest way to tune `preferences.md`.

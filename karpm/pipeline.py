@@ -26,10 +26,15 @@ def _needs_refresh(row, refresh_after_hours: int) -> bool:
     return datetime.now(timezone.utc) - last > timedelta(hours=refresh_after_hours)
 
 
-def scrape_search(conn, cfg, fetcher: Fetcher, search) -> dict:
-    """Walk one saved search, storing every listing it returns."""
+def scrape_search(conn, cfg, fetcher: Fetcher, search, mark_missing: bool = True) -> dict:
+    """Walk one saved search, storing every listing it returns.
+
+    `mark_missing` flags listings that were not seen this run as delisted. A
+    capped run (`search.max_listings`) must not do that - it never looked at
+    the rest of the search, so their absence means nothing.
+    """
     counts = {"seen": 0, "new": 0, "changed": 0, "pages": 0, "delisted": 0,
-              "skipped_wanted": 0}
+              "skipped_wanted": 0, "listed": 0, "capped": False}
     seen_ids: set[str] = set()
     url: str | None = search.url
     page = 0
@@ -46,6 +51,9 @@ def scrape_search(conn, cfg, fetcher: Fetcher, search) -> dict:
                 search.name, url,
             )
             break
+
+        counts["listed"] += len(result["items"])
+        counts["selector"] = result["selector"]
 
         for item in result["items"]:
             # "Gesuch" ads are people wanting to buy, not sell. Storing them
@@ -73,13 +81,20 @@ def scrape_search(conn, cfg, fetcher: Fetcher, search) -> dict:
             elif outcome in ("price_change", "edited", "relisted"):
                 counts["changed"] += 1
 
+            if search.max_listings is not None and counts["seen"] >= search.max_listings:
+                conn.commit()
+                counts["pages"] = page + 1
+                counts["capped"] = True
+                return counts
+
         conn.commit()
         url = result["next_url"]
         page += 1
         counts["pages"] = page
 
-    counts["delisted"] = db.mark_delisted(conn, seen_ids, search.name)
-    conn.commit()
+    if mark_missing:
+        counts["delisted"] = db.mark_delisted(conn, seen_ids, search.name)
+        conn.commit()
     return counts
 
 

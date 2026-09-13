@@ -40,6 +40,9 @@ class SearchConfig:
     # comparables the scoring prompt relies on.
     make: str | None = None
     model: str | None = None
+    # Stop after this many listings. Only used by `karpm trial`; a real run
+    # takes the whole search.
+    max_listings: int | None = None
 
 
 @dataclass
