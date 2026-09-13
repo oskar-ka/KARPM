@@ -39,6 +39,7 @@ class SearchPlan:
     per_page: int | None = None
     pages_walked: int = 0
     skipped_wanted: int = 0
+    duplicates: int = 0              # the same ad offered on more than one page
     truncated: bool = False          # we stopped early, so we did not see it all
     selector: str | None = None
 
@@ -74,6 +75,7 @@ def enumerate_search(cfg, fetcher: Fetcher, search) -> SearchPlan:
     many are new, and precisely how many photos are about to be downloaded.
     """
     plan = SearchPlan(search=search)
+    collected: set[str] = set()
     url: str | None = search.url
     page = 0
 
@@ -116,6 +118,13 @@ def enumerate_search(cfg, fetcher: Fetcher, search) -> SearchPlan:
             if item.get("is_wanted"):
                 plan.skipped_wanted += 1
                 continue
+            # A paid TOP placement on page one reappears in its organic position
+            # further in, so ads have to be deduplicated across pages and not
+            # just within one - otherwise it is fetched and counted twice.
+            if item["id"] in collected:
+                plan.duplicates += 1
+                continue
+            collected.add(item["id"])
             plan.items.append(item)
 
         page += 1
@@ -155,9 +164,11 @@ def describe_plan(plan: SearchPlan, cfg) -> str:
     images = plan.images_expected(cfg.images.max_per_listing if cfg.images.enabled else 0)
     lines = [
         f"  {plan.total_results if plan.total_results is not None else len(plan.items)} ad(s) "
-        f"in this search" + (f" across {plan.page_count} page(s)" if plan.page_count else ""),
+        f"reported by the search"
+        + (f" across {plan.page_count} page(s)" if plan.page_count else ""),
         f"  {plan.pages_walked} page(s) walked, {len(plan.items)} ad(s) collected"
-        + (f", {plan.skipped_wanted} wanted ad(s) skipped" if plan.skipped_wanted else ""),
+        + (f", {plan.skipped_wanted} wanted ad(s) skipped" if plan.skipped_wanted else "")
+        + (f", {plan.duplicates} repeat(s) of a promoted ad" if plan.duplicates else ""),
         f"  {len(plan.new)} new, {len(plan.changed)} with a new price, "
         f"{len(plan.refresh)} due a refresh, {len(plan.unchanged)} unchanged",
         f"  {len(plan.to_fetch)} ad page(s) and {images} image(s) to fetch",

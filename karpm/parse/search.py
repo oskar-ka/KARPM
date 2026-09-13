@@ -143,6 +143,10 @@ def _parse_item(node, base_url: str) -> dict | None:
         "is_wanted": _has_tag(node, "Gesuch"),
         # "PRO" marks a commercial seller.
         "is_commercial": _has_tag(node, "PRO"),
+        # "TOP" is a paid placement. It sits above the organic results, which is
+        # why page one carries 26 ads when the page size is 25, and the same ad
+        # usually appears again in its organic position further in.
+        "is_promoted": _has_tag(node, "TOP"),
     }
 
 
