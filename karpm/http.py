@@ -10,11 +10,35 @@ from __future__ import annotations
 
 import logging
 import random
+import re
 import time
 
 import requests
 
 log = logging.getLogger(__name__)
+
+CHARSET_RE = re.compile(rb"""<meta[^>]+charset=["']?\s*([\w-]+)""", re.I)
+
+
+def decode(resp: requests.Response) -> str:
+    """Decode a response body using the charset the document declares.
+
+    requests falls back to ISO-8859-1 for any text/* response that arrives
+    without a charset in the Content-Type header (RFC 2616). Kleinanzeigen
+    serves UTF-8 and declares it in a meta tag, so that fallback turns every
+    umlaut into mojibake - "Bremsklötze" becomes "BremsklÃ¶tze" - which then
+    poisons the description text in the database and in the scoring prompt.
+    """
+    declared = (resp.encoding or "").lower()
+    if declared and declared not in ("iso-8859-1", "latin-1", "latin1", "ascii"):
+        return resp.text
+
+    match = CHARSET_RE.search(resp.content[:4096])
+    encoding = match.group(1).decode("ascii", "ignore") if match else "utf-8"
+    try:
+        return resp.content.decode(encoding, errors="replace")
+    except LookupError:
+        return resp.content.decode("utf-8", errors="replace")
 
 
 class Blocked(RuntimeError):
@@ -64,12 +88,16 @@ class Fetcher:
                 continue
 
             if resp.status_code == 200:
-                if not binary and _looks_blocked(resp.text):
+                if binary:
+                    self.consecutive_blocks = 0
+                    return resp.content
+                text = decode(resp)
+                if _looks_blocked(text):
                     self._register_block(url)
                     time.sleep(60 * (self.consecutive_blocks ** 2))
                     continue
                 self.consecutive_blocks = 0
-                return resp.content if binary else resp.text
+                return text
 
             if resp.status_code in (403, 429, 503):
                 self._register_block(url)

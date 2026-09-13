@@ -1,26 +1,47 @@
 """Parsing a Kleinanzeigen search-results page.
 
-Selectors are layered: we try several known shapes and fall back to generic
-attribute probing, so a cosmetic markup change does not silently return zero
-results. `karpm probe` reports which layer fired.
+Kleinanzeigen rebuilt the search page as an Astro app styled with Tailwind, so
+the markup carries no semantic class names any more - the price lives in a
+`<p class="my-xsmall text-title3 font-strong text-secondary">`, which will churn
+with the next redesign. Two things on the page *are* stable and are what this
+parser leans on:
+
+  * `<article data-adid=... data-href=...>` - the ad id and link
+  * a per-ad `<script type="application/ld+json">` ImageObject with the title,
+    the description snippet and the photo URL
+
+Everything else is found by the shape of its text - a price looks like
+"1.250 € VB", a location like "80331 München", a date like "02.04.2026" or
+"Gestern, 21:26" - which survives a restyle in a way that class names do not.
+The legacy selectors are kept as a fallback in case an older page is served.
 """
 
 from __future__ import annotations
 
+import json
+import re
 from urllib.parse import urljoin
 
 from bs4 import BeautifulSoup
 
-from .fields import ad_id_from_url, clean, parse_price
+from .fields import ad_id_from_url, clean, parse_posted, parse_price
 
 BASE = "https://www.kleinanzeigen.de"
 
 ITEM_SELECTORS = (
+    "article[data-adid]",
     "article.aditem",
     "li.ad-listitem article",
     "[data-adid]",
-    "article[data-href]",
 )
+
+# A standalone price label, not a price mentioned inside a description.
+PRICE_RE = re.compile(
+    r"^(?:\d[\d.\s]*(?:,\d{2})?\s*€(?:\s*VB)?|VB|Zu verschenken|Preis auf Anfrage)$",
+    re.IGNORECASE,
+)
+POSTCODE_RE = re.compile(r"^\d{4,5}\s+\S")
+DATE_RE = re.compile(r"^(?:\d{1,2}\.\d{1,2}\.\d{4}|Heute|Gestern)\b")
 
 
 def _soup(html: str) -> BeautifulSoup:
@@ -34,16 +55,17 @@ def parse_search_page(html: str, base_url: str = BASE) -> dict:
 
     for selector in ITEM_SELECTORS:
         nodes = soup.select(selector)
-        if nodes:
-            used = selector
-            for node in nodes:
-                item = _parse_item(node, base_url)
-                if item:
-                    items.append(item)
-            if items:
-                break
+        if not nodes:
+            continue
+        used = selector
+        for node in nodes:
+            item = _parse_item(node, base_url)
+            if item:
+                items.append(item)
+        if items:
+            break
 
-    # Deduplicate: the same ad can appear twice (top-placement + organic).
+    # The same ad can appear twice (paid top placement plus the organic hit).
     seen, unique = set(), []
     for item in items:
         if item["id"] in seen:
@@ -67,27 +89,95 @@ def _parse_item(node, base_url: str) -> dict | None:
     if not listing_id:
         return None
 
-    title_node = node.select_one("a.ellipsis, h2 a, .text-module-begin a, h2")
-    price_node = node.select_one(
-        ".aditem-main--middle--price-shipping--price, .aditem-main--middle--price, "
-        "p.aditem-main--middle--price-shipping--price, [class*='--price']"
-    )
-    price, price_kind = parse_price(clean(price_node.get_text()) if price_node else None)
+    embedded = _embedded_json(node)
+    price_text = _price_text(node)
+    price, price_kind = parse_price(price_text)
+    posted = parse_posted(_first_matching(node, DATE_RE))
 
     return {
         "id": str(listing_id),
         "url": url,
-        "title": clean(title_node.get_text()) if title_node else None,
+        "title": embedded.get("title") or _title(node),
+        "snippet": embedded.get("description"),
+        "thumbnail": embedded.get("contentUrl"),
         "price_eur": price,
         "price_kind": price_kind,
+        "location": _first_matching(node, POSTCODE_RE),
+        "posted_at": posted.isoformat(timespec="seconds") if posted else None,
+        # "Gesuch" marks a wanted ad - someone looking to buy, not to sell.
+        "is_wanted": _has_tag(node, "Gesuch"),
+        # "PRO" marks a commercial seller.
+        "is_commercial": _has_tag(node, "PRO"),
     }
 
 
+def _embedded_json(node) -> dict:
+    """Each ad carries its own ImageObject with title, snippet and photo URL."""
+    tag = node.find("script", attrs={"type": "application/ld+json"})
+    if not tag:
+        return {}
+    try:
+        data = json.loads(tag.string or tag.get_text() or "")
+    except (json.JSONDecodeError, TypeError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {
+        "title": clean(data.get("title")),
+        "description": clean(data.get("description")),
+        "contentUrl": data.get("contentUrl"),
+    }
+
+
+def _title(node) -> str | None:
+    for selector in ("h3 a", "h2 a", "a.ellipsis", "h2", "h3"):
+        found = node.select_one(selector)
+        if found:
+            text = clean(found.get_text(" ", strip=True))
+            if text:
+                return text
+    return None
+
+
+def _price_text(node) -> str | None:
+    """The asking price, ignoring a struck-through 'was' price beside it."""
+    for element in node.find_all(["p", "span", "div", "strong"]):
+        classes = " ".join(element.get("class") or [])
+        if "line-through" in classes:
+            continue
+        text = clean(element.get_text(" ", strip=True))
+        if text and PRICE_RE.match(text):
+            return text
+    return None
+
+
+def _first_matching(node, pattern: re.Pattern) -> str | None:
+    for raw in node.stripped_strings:
+        text = clean(raw)
+        if text and pattern.match(text):
+            return text
+    return None
+
+
+def _has_tag(node, label: str) -> bool:
+    return any(clean(raw) == label for raw in node.stripped_strings)
+
+
+# The "next page" arrow. Matching aria-label*="eite" instead would also match
+# the numbered "Seite 2" / "Seite 3" links, and on page 2 the first of those is
+# "Seite 1" - which walks the pagination backwards forever.
+NEXT_SELECTORS = (
+    "link[rel=next]",
+    "a[rel=next]",
+    'a[aria-label="Nächste"]',
+    "a[aria-label^='Nächste']",
+    "a.pagination-next",
+    ".pagination-next",
+)
+
+
 def _next_url(soup, base_url: str) -> str | None:
-    link = soup.select_one("link[rel=next]")
-    if link and link.get("href"):
-        return urljoin(base_url, link["href"])
-    for selector in ("a.pagination-next", ".pagination-next", "a[aria-label*='eite']"):
+    for selector in NEXT_SELECTORS:
         node = soup.select_one(selector)
         if node and node.get("href"):
             return urljoin(base_url, node["href"])

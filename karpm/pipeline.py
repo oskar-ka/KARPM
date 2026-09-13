@@ -28,7 +28,8 @@ def _needs_refresh(row, refresh_after_hours: int) -> bool:
 
 def scrape_search(conn, cfg, fetcher: Fetcher, search) -> dict:
     """Walk one saved search, storing every listing it returns."""
-    counts = {"seen": 0, "new": 0, "changed": 0, "pages": 0, "delisted": 0}
+    counts = {"seen": 0, "new": 0, "changed": 0, "pages": 0, "delisted": 0,
+              "skipped_wanted": 0}
     seen_ids: set[str] = set()
     url: str | None = search.url
     page = 0
@@ -47,6 +48,12 @@ def scrape_search(conn, cfg, fetcher: Fetcher, search) -> dict:
             break
 
         for item in result["items"]:
+            # "Gesuch" ads are people wanting to buy, not sell. Storing them
+            # would skew the price comparables and waste scoring calls.
+            if item.get("is_wanted"):
+                counts["skipped_wanted"] += 1
+                continue
+
             seen_ids.add(item["id"])
             counts["seen"] += 1
             existing = db.get_listing(conn, item["id"])
@@ -84,11 +91,16 @@ def _fetch_and_store(conn, cfg, fetcher, item, search, referer=None) -> str:
         return "gone"
 
     data = parse_detail_page(html, item["url"])
-    # The search page is a reliable fallback for the two fields that matter most.
+    # The search page already gave us a usable version of several fields; use it
+    # wherever the detail page did not yield one.
     data["id"] = data.get("id") or item["id"]
     data["title"] = data.get("title") or item["title"]
+    data["location"] = data.get("location") or item.get("location")
+    data["posted_at"] = data.get("posted_at") or item.get("posted_at")
     if data.get("price_eur") is None:
         data["price_eur"], data["price_kind"] = item["price_eur"], item["price_kind"]
+    if data.get("seller_type") in (None, "unknown") and item.get("is_commercial"):
+        data["seller_type"] = "commercial"
     data["search_name"] = search.name
 
     image_urls = data.pop("image_urls", []) or []
@@ -104,7 +116,7 @@ def _fetch_and_store(conn, cfg, fetcher, item, search, referer=None) -> str:
 def run_scrape(conf, conn, fetcher: Fetcher | None = None) -> dict:
     fetcher = fetcher or Fetcher(conf.scrape)
     run_id = db.start_run(conn, "scrape")
-    totals = {"seen": 0, "new": 0, "changed": 0, "delisted": 0}
+    totals = {"seen": 0, "new": 0, "changed": 0, "delisted": 0, "skipped_wanted": 0}
     ok = True
     error = None
 

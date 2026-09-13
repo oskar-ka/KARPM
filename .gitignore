@@ -222,3 +222,5 @@ config.toml
 preferences.md
 data/
 tests/fixtures/live_*.html
+# ...except the trimmed captures committed as regression fixtures.
+!tests/fixtures/live_search_astro.html

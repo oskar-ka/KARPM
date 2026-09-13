@@ -68,6 +68,15 @@ regex, and write a `parse_warnings` list into every row — so a markup change
 shows up as a warning in the data rather than silently becoming NULL. A failed
 re-parse never overwrites a field that parsed correctly before.
 
+Kleinanzeigen rebuilt the site in Astro with Tailwind, so the class names carry
+no meaning and churn. The search parser therefore identifies fields by the shape
+of their text — a price looks like `1.250 € VB`, a location like `80331 München`
+— and reads each ad's embedded `ld+json` block for title, snippet and photo.
+That survives a restyle in a way that class names do not.
+
+Wanted ads (`Gesuch`) are skipped rather than stored: they are people looking to
+buy, and they would skew the price comparables that the scoring prompt uses.
+
 ## Running
 
 ```bash
@@ -123,6 +132,11 @@ Defaults are deliberately slow — 4–9 s between requests, retries with backof
 `Retry-After` honoured, and the run aborts after three consecutive blocks rather
 than hammering. Two runs a day is a few hundred requests, in the range of a
 person browsing for an hour. Speeding this up is how you get blocked.
+
+## Documentation
+
+- [`docs/DATABASE.md`](docs/DATABASE.md) — what is stored, how a save works,
+  and how to query it.
 
 ## Tests
 
