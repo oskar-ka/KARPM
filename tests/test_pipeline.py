@@ -157,3 +157,19 @@ def test_comparable_stats_needs_a_sample(conf, conn):
     pipeline.run_scrape(conf, conn, FakeFetcher())
     row = db.get_listing(conn, "2847612345")
     assert db.comparable_stats(conn, row) is None, "no stats from a two-listing database"
+
+
+def test_search_config_supplies_make_and_model(conf, conn):
+    """The page cannot provide a model, so the search must."""
+    conf.searches[0].make, conf.searches[0].model = "Yamaha", "MT-07"
+    pipeline.run_scrape(conf, conn, FakeFetcher())
+
+    row = db.get_listing(conn, "2847612345")
+    assert row["model"] == "MT-07"
+    assert row["make"] == "BMW" or row["make"] == "Yamaha"  # page value wins if present
+
+
+def test_comparables_need_a_model_and_a_sample(conf, conn):
+    pipeline.run_scrape(conf, conn, FakeFetcher())
+    row = db.get_listing(conn, "2847612345")
+    assert db.comparable_stats(conn, row) is None, "no model set, so no comparables"

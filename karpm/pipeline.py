@@ -95,6 +95,8 @@ def _fetch_and_store(conn, cfg, fetcher, item, search, referer=None) -> str:
     # wherever the detail page did not yield one.
     data["id"] = data.get("id") or item["id"]
     data["title"] = data.get("title") or item["title"]
+    data["make"] = data.get("make") or search.make
+    data["model"] = data.get("model") or search.model
     data["location"] = data.get("location") or item.get("location")
     data["posted_at"] = data.get("posted_at") or item.get("posted_at")
     if data.get("price_eur") is None:

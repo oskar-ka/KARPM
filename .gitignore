@@ -224,3 +224,5 @@ data/
 tests/fixtures/live_*.html
 # ...except the trimmed captures committed as regression fixtures.
 !tests/fixtures/live_search_astro.html
+!tests/fixtures/live_detail_bmw_fixed.html
+!tests/fixtures/live_detail_bmw_vb.html

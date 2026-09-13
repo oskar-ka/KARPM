@@ -10,6 +10,12 @@ name = "yamaha-mt07"
 url = "https://www.kleinanzeigen.de/s-motorraeder-roller/yamaha-mt-07/k0c305"
 enabled = true
 max_pages = 10
+# Ads list a "Marke" but no "Modell", so name the model this search targets.
+# Listings are grouped by it to build the price comparables that the scoring
+# prompt uses to judge value for money - leave it out and every listing is
+# scored with "no comparable listings in the database".
+make = "Yamaha"
+model = "MT-07"
 
 # [[searches]]
 # name = "yamaha-mt07-berlin"

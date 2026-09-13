@@ -17,6 +17,7 @@ import anthropic
 from pydantic import BaseModel, Field
 
 from . import db, images
+from .parse.fields import ATTRIBUTE_MAP, slug
 
 log = logging.getLogger(__name__)
 
@@ -82,6 +83,13 @@ def load_preferences(path: str | Path) -> str:
     return path.read_text(encoding="utf-8").strip()
 
 
+def _is_mapped(label: str) -> bool:
+    """True if this raw attribute already has a typed column of its own."""
+    normalised = slug(label)
+    return (normalised in ATTRIBUTE_MAP
+            or (normalised.endswith("bis") and normalised[:-3] in ATTRIBUTE_MAP))
+
+
 def listing_to_text(row, comparables: dict | None) -> str:
     """Render a listing row as compact facts for the prompt."""
     def fmt(label: str, value, suffix: str = "") -> str | None:
@@ -120,9 +128,10 @@ def listing_to_text(row, comparables: dict | None) -> str:
         ]),
     ]
 
+    # Only pass through attributes that are not already shown as typed fields
+    # above, so the model does not read the same fact twice.
     extra = json.loads(row["attributes_json"] or "{}")
-    unmapped = {k: v for k, v in extra.items() if k.lower() not in
-                {"marke", "modell", "kilometerstand", "erstzulassung", "leistung", "hubraum"}}
+    unmapped = {k: v for k, v in extra.items() if not _is_mapped(k)}
     if unmapped:
         lines.append("Other listed attributes: " + ", ".join(f"{k}: {v}" for k, v in unmapped.items()))
 

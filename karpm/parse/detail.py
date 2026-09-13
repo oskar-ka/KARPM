@@ -127,7 +127,7 @@ def parse_detail_page(html: str, url: str | None = None) -> dict:
         out["price_eur"], out["price_kind"] = None, visible_kind
 
     raw_attrs.update(_attributes(soup))
-    for tag in _tags(soup):
+    for tag in _tags(soup, raw_attrs):
         raw_attrs.setdefault(tag, "ja")
 
     postcode, location = parse_location(_first_text(soup, LOCALITY_SELECTORS))
@@ -202,14 +202,24 @@ def _attributes(soup) -> dict[str, str]:
     return attrs
 
 
-def _tags(soup) -> list[str]:
-    """Boolean features rendered as chips (Scheckheftgepflegt, ABS, ...)."""
+def _tags(soup, known: dict[str, str]) -> list[str]:
+    """Boolean features rendered as chips (Scheckheftgepflegt, ABS, ...).
+
+    Some of these selectors also match the label/value rows of the details
+    list, which would re-enter every attribute as a junk boolean such as
+    {"Art Motorräder": "ja"} and duplicate the whole block into the scoring
+    prompt. Anything that reproduces a pair we already captured is dropped.
+    """
+    already = {slug(label) for label in known}
+    already |= {slug(f"{label}{value}") for label, value in known.items()}
+
     tags = []
     for selector in TAG_SELECTORS:
         for node in soup.select(selector):
-            text = clean(node.get_text())
-            if text and len(text) < 60:
-                tags.append(text)
+            text = clean(node.get_text(" ", strip=True))
+            if not text or len(text) >= 60 or slug(text) in already:
+                continue
+            tags.append(text)
         if tags:
             break
     return tags

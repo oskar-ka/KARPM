@@ -50,6 +50,10 @@ the scraper paginates from it. No filter logic to keep in sync with the site.
 every listing; vague preferences produce scores that feel arbitrary. Say what you
 would tell a friend looking on your behalf, including what you *don't* care about.
 
+Each search should name the model it targets (`make` / `model` in
+`config.toml`). Ads list a *Marke* but no *Modell*, so without it listings
+cannot be grouped into the price comparables the scoring prompt depends on.
+
 ### Verify the parsers against the live site first
 
 Kleinanzeigen's markup is not a stable API. Before trusting a run:

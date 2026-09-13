@@ -34,6 +34,12 @@ class SearchConfig:
     url: str
     enabled: bool = True
     max_pages: int = 10
+    # Kleinanzeigen motorcycle ads carry a "Marke" but no "Modell" attribute, so
+    # the model cannot be parsed off the page. Since one search URL targets one
+    # model anyway, declare it here: it is what groups listings into the price
+    # comparables the scoring prompt relies on.
+    make: str | None = None
+    model: str | None = None
 
 
 @dataclass

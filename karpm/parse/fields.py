@@ -158,14 +158,14 @@ ATTRIBUTE_MAP = {
     "zustand": "condition",
     "hutuv": "inspection_until",
     "hu": "inspection_until",
+    "hubis": "inspection_until",
     "tuv": "inspection_until",
+    "tuvbis": "inspection_until",
     "hauptuntersuchung": "inspection_until",
     "anzahlfahrzeughalter": "owners",
     "fahrzeughalter": "owners",
     "halter": "owners",
     "scheckheftgepflegt": "full_service_hist",
-    "kraftstoffart": "fuel",
-    "getriebe": "gearbox",
 }
 
 
@@ -179,7 +179,10 @@ def apply_attributes(attrs: dict[str, str]) -> tuple[dict, list[str]]:
     warnings: list[str] = []
 
     for label, value in attrs.items():
-        key = ATTRIBUTE_MAP.get(slug(label))
+        normalised = slug(label)
+        key = ATTRIBUTE_MAP.get(normalised)
+        if key is None and normalised.endswith("bis"):
+            key = ATTRIBUTE_MAP.get(normalised[: -len("bis")])
         if key is None:
             continue
         if key == "km":
