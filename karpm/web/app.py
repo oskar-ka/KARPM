@@ -13,6 +13,8 @@ from flask import (Flask, abort, flash, redirect, render_template, request,
 
 from . import fields, tomledit
 from .. import db, derived
+from .. import preferences as preferences_file
+from ..ai import passes
 from ..parse import fields as parse_fields
 from ..config import Config, load_config
 
@@ -35,6 +37,13 @@ def create_app(config_path: str = "config.toml") -> Flask:
     app.config["KARPM_CONFIG_PATH"] = config_path
     # Only used for flash messages; this app has no login and no user data.
     app.secret_key = "karpm-local"
+
+    # Jinja caches a template the first time it renders it, and without this it
+    # never looks at the file again - so a page kept on serving the version it
+    # started with, and an update to the UI looked like an update that had not
+    # worked. One stat() per render is nothing next to that.
+    app.config["TEMPLATES_AUTO_RELOAD"] = True
+    app.jinja_env.auto_reload = True
 
     # The template builds field names the same way the parser reads them.
     app.jinja_env.globals["input_name"] = fields.input_name
@@ -254,33 +263,72 @@ def create_app(config_path: str = "config.toml") -> Flask:
               "on its next cycle", "ok")
         return redirect(url_for("searches"))
 
-    # --- preferences and config -----------------------------------------
+    # --- prompts and config ----------------------------------------------
 
     @app.route("/preferences")
     def preferences():
-        path = Path(conf().scoring.preferences_file)
-        text = path.read_text(encoding="utf-8") if path.exists() else ""
-        return render_template("preferences.html", text=text, path=path)
+        """Where this page used to live, for anyone who bookmarked it."""
+        return redirect(url_for("prompts"))
 
-    @app.post("/preferences")
-    def save_preferences():
-        path = Path(conf().scoring.preferences_file)
-        text = request.form.get("text", "")
-        _backup(path)
-        path.write_text(text, encoding="utf-8")
-        # Nothing about a listing changes when you rewrite what you want, so
-        # the verdicts have to be marked here rather than noticed later.
+    @app.route("/prompts")
+    def prompts():
+        return render_template("prompts.html", **_prompt_page(conf()))
+
+    @app.post("/prompts")
+    def save_prompts():
+        current = conf()
+        written, marked = [], {"read": 0, "scored": 0}
+
+        for kind, cfg in (("text", current.extract_text),
+                          ("photos", current.extract_photos)):
+            text = (request.form.get(f"prompt_{kind}") or "").strip()
+            path = Path(cfg.prompt_file or "")
+            if not str(path) or text == passes.load_prompt(kind, cfg).strip():
+                continue                # unchanged, or nowhere to put it
+            path.parent.mkdir(parents=True, exist_ok=True)
+            _backup(path)
+            path.write_text(text + "\n", encoding="utf-8")
+            written.append(f"the {'description' if kind == 'text' else 'photo'} prompt")
+
+        prefs_path = Path(current.scoring.preferences_file)
+        before = prefs_path.read_text(encoding="utf-8") if prefs_path.exists() else ""
+        after = preferences_file.compile({
+            part.key: request.form.get(f"pref_{part.key}", "")
+            for part in preferences_file.PARTS
+        } | {preferences_file.REST: request.form.get("pref_rest", "")})
+        if after != before:
+            prefs_path.parent.mkdir(parents=True, exist_ok=True)
+            _backup(prefs_path)
+            prefs_path.write_text(after, encoding="utf-8")
+            written.append("your preferences")
+
         conn = connect()
         try:
-            marked = db.note_preferences(conn, text)
+            # Nothing about a listing changes when you rewrite what you want or
+            # how you ask, so the stale rows have to be marked here rather than
+            # noticed later. A changed prompt is caught by the reading passes
+            # themselves, whose key includes the prompt's text.
+            marked["scored"] = db.note_preferences(conn, after)
+            marked["read"] = sum(
+                db.extraction_backlog(conn, kind, passes.prompt_version(kind, cfg))
+                for kind, cfg in (("text", current.extract_text),
+                                  ("photos", current.extract_photos))
+                if cfg.enabled)
         finally:
             conn.close()
-        if marked:
-            flash(f"preferences saved - {marked} listing(s) marked for re-scoring, "
-                  "which happens on the next scoring run and costs credits", "ok")
+
+        if not written:
+            flash("nothing changed, so nothing was written", "ok")
         else:
-            flash("preferences saved - unchanged, so nothing was marked", "ok")
-        return redirect(url_for("preferences"))
+            cost = []
+            if marked["read"]:
+                cost.append(f"{marked['read']} listing(s) to read again")
+            if marked["scored"]:
+                cost.append(f"{marked['scored']} to score again")
+            flash("saved " + " and ".join(written)
+                  + (" - " + ", ".join(cost) + ", which costs credits"
+                     if cost else ""), "ok")
+        return redirect(url_for("prompts"))
 
     @app.route("/config")
     def config_page():
@@ -801,20 +849,50 @@ def _status(conn, conf) -> dict:
     }
 
 
+def _prompt_page(conf) -> dict:
+    """Everything the prompts page shows: two prompts, and preferences in parts."""
+    prefs_path = Path(conf.scoring.preferences_file)
+    text = prefs_path.read_text(encoding="utf-8") if prefs_path.exists() else ""
+    return {
+        "parts": preferences_file.PARTS,
+        "values": preferences_file.split(text),
+        "prefs_path": prefs_path,
+        "passes": [
+            {"kind": "text", "number": 1, "title": "pass 1 - the description",
+             "blurb": "What pass 1 is told before it is shown an ad. It reads "
+                      "the seller's prose and writes down what is claimed; it "
+                      "does not judge the bike.",
+             "path": conf.extract_text.prompt_file,
+             "enabled": conf.extract_text.enabled,
+             "text": passes.load_prompt("text", conf.extract_text)},
+            {"kind": "photos", "number": 2, "title": "pass 2 - the photos",
+             "blurb": "What pass 2 is told before it is shown the gallery. It "
+                      "describes what is visible and shortlists the photos "
+                      "worth sending on to pass 3.",
+             "path": conf.extract_photos.prompt_file,
+             "enabled": conf.extract_photos.enabled,
+             "text": passes.load_prompt("photos", conf.extract_photos)},
+        ],
+    }
+
+
 def _unread_counts(conn, conf) -> dict:
     """How many listings each reading pass still owes a look at.
 
     A pass quietly doing nothing - switched off, or its queue never draining -
     would otherwise be indistinguishable from one that had read everything.
     """
-    passes = {"description": conf.extract_text, "photos": conf.extract_photos}
+    reading = {"description": conf.extract_text, "photos": conf.extract_photos}
     out = {}
-    for label, cfg in passes.items():
+    for label, cfg in reading.items():
         if not cfg.enabled:
             out[label] = None       # off, which is different from nothing to do
             continue
         kind = "text" if label == "description" else "photos"
-        out[label] = db.extraction_backlog(conn, kind, cfg.prompt_version)
+        # The same key the pass itself uses, prompt text included - otherwise
+        # editing a prompt would leave this reading "done" while every listing
+        # was in fact due to be read again.
+        out[label] = db.extraction_backlog(conn, kind, passes.prompt_version(kind, cfg))
     return out
 
 

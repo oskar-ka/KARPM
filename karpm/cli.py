@@ -7,10 +7,12 @@ import json
 import logging
 import re
 import sys
+import time
 from pathlib import Path
 
 from . import daemon, db, images, mailer, pipeline, scoring, trial
 from .ai import extract, provider
+from .ai import models as ai_models
 from .config import SearchConfig, load_config
 from .http import Blocked, Fetcher
 from .parse.detail import parse_detail_page
@@ -110,6 +112,20 @@ def _extract_kinds(args) -> tuple[str, ...]:
     return ("text", "photos")
 
 
+def _say(message: str) -> None:
+    """Progress, on stderr so stdout stays pipeable into jq.
+
+    Flushed because the interesting part of this command is the wait: a model
+    that thinks for a minute with nothing on screen looks like one that has hung.
+    """
+    print(message, file=sys.stderr, flush=True)
+
+
+def _takes_effort(model_id: str) -> bool:
+    known = ai_models.get(model_id)
+    return known is None or bool(known.effort)
+
+
 def _extract_config(conf) -> dict:
     return {"text": conf.extract_text, "photos": conf.extract_photos}
 
@@ -139,38 +155,52 @@ def cmd_extract_one(args) -> int:
         conn.close()
         return 1
 
+    _say(f"{row['id']}: {row['title']}")
     cfg_for = _extract_config(conf)
     failed = False
     for kind in _extract_kinds(args):
         cfg = cfg_for[kind]
+        label = "pass 1 (description)" if kind == "text" else "pass 2 (photos)"
         request = extract.build_request(conn, kind, cfg, row)
         if request is None:
-            print(f"{kind}: nothing to look at - no photos have downloaded for "
-                  f"this listing", file=sys.stderr)
+            _say(f"{label}: nothing to look at - none of this ad's photos have "
+                 f"downloaded")
             continue
 
         if args.show_prompt:
             print("=" * 72)
-            print(f"PASS {'1 (description)' if kind == 'text' else '2 (photos)'} "
-                  f"FOR {row['id']} (not sent - no API call)")
+            print(f"{label.upper()} FOR {row['id']} (not sent - no API call)")
             print("=" * 72)
             print(_render_prompt(request))
             continue
 
+        photos = sum(1 for block in request.blocks if block["type"] == "image")
+        words = sum(len(block.get("text", "").split()) for block in request.blocks)
+        _say(f"{label}: sending {words} word(s)"
+             + (f" and {photos} photo(s)" if photos else "")
+             + f" to {cfg.model} via {cfg.provider}"
+             + (f" at effort {cfg.effort} - a thinking model can take a minute..."
+                if _takes_effort(cfg.model) else "..."))
+
         engine = provider.get(cfg.provider)
+        started = time.monotonic()
         try:
             read = extract.read_one(conn, kind, cfg, row, engine)
         except provider.ProviderError as exc:
-            print(f"{kind}: {exc}", file=sys.stderr)
+            _say(f"{label}: FAILED after {time.monotonic() - started:.0f}s - {exc}")
             failed = True
             continue
         data, reply = read
+        _say(f"{label}: answered in {time.monotonic() - started:.0f}s - "
+             f"{reply.input_tokens} tokens in, {reply.output_tokens} out"
+             + (f", {reply.cached_tokens} cached" if reply.cached_tokens else ""))
         print(json.dumps({kind: data}, indent=2, ensure_ascii=False))
-        print(f"{reply.input_tokens} in / {reply.output_tokens} out", file=sys.stderr)
         if args.save:
             extract.save(conn, kind, cfg, row, engine, data, reply)
             conn.commit()
-            print(f"{kind}: saved", file=sys.stderr)
+            _say(f"{label}: saved")
+        else:
+            _say(f"{label}: not saved (pass --save to keep it)")
 
     conn.close()
     return 1 if failed else 0

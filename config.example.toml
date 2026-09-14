@@ -118,6 +118,12 @@ enabled = true
 provider = "anthropic"
 model = "claude-haiku-4-5"
 effort = "medium"
+# What this pass is told to do. Edit it on the prompts page in the web UI, or
+# in the file directly. Missing, or empty, means the prompt built into the code.
+# Changing the prompt re-reads every listing: the text is part of the key that
+# decides whether stored findings are still current, so nobody has to remember
+# to bump prompt_version by hand.
+prompt_file = "prompts/extract_text.md"
 prompt_version = "v1"
 max_per_run = 200
 
@@ -130,6 +136,12 @@ enabled = true
 provider = "anthropic"
 model = "claude-haiku-4-5"
 effort = "medium"
+# What this pass is told to do. Edit it on the prompts page in the web UI, or
+# in the file directly. Missing, or empty, means the prompt built into the code.
+# Changing the prompt re-reads every listing: the text is part of the key that
+# decides whether stored findings are still current, so nobody has to remember
+# to bump prompt_version by hand.
+prompt_file = "prompts/extract_photos.md"
 prompt_version = "v1"
 max_per_run = 200
 # How many photos this pass looks at, and how many it may pass on. Photos are

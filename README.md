@@ -52,7 +52,8 @@ karpm init
 model, radius and price there, paste the resulting URL into `config.toml`, and
 the scraper paginates from it. No filter logic to keep in sync with the site.
 
-**`preferences.md` is the most important file here.** It is handed to Claude with
+**`preferences.md` is the most important file here** (and the prompts page is
+where it is easiest to write). It is handed to Claude with
 every listing; vague preferences produce scores that feel arbitrary. Say what you
 would tell a friend looking on your behalf, including what you *don't* care about.
 
@@ -165,9 +166,17 @@ journalctl -u karpm -f
 
 `karpm web` serves a page with the daemon's status, a sortable and filterable
 table of every listing, a page per listing with its photos, price history and
-scores, and forms for the searches, `preferences.md` and every setting in
+scores, and forms for the searches, the prompts and every setting in
 `config.toml` — a field each, with a note on what it does. Buttons queue a
 scrape, a digest, a reading or a re-score, and pause the schedule.
+
+The **prompts** page holds everything the three passes are told: a box each for
+what passes 1 and 2 are instructed to do, and — for pass 3 — five boxes (*About
+the bike*, *What it needs*, *What I would like*, *What is not important*,
+*Logistics*) compiled into `preferences.md`. Five narrow questions get better
+answers out of a person than one blank page. Editing a prompt re-reads every
+listing, since the prompt's text is part of what decides whether stored findings
+still match what was asked for.
 
 A listing's page shows what passes 1 and 2 found in panels of their own, naming
 the model that said it, and outlines the photos pass 2 shortlisted. The findings

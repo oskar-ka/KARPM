@@ -46,6 +46,14 @@ def model_field(help: str = "") -> Field:
                  choices=MODEL_CHOICES, open_choice=True)
 
 
+def prompt_file_field() -> Field:
+    return Field("prompt_file", "text",
+                 "What this pass is told to do, edited on the prompts page. "
+                 "Missing means the prompt built into the code. Changing the "
+                 "prompt re-reads every listing, so the findings match what "
+                 "was asked for.", wide=True)
+
+
 EFFORT_NOTE = ("How hard the model thinks. Only some models take one - the row "
                "is hidden for the others, and the setting is left out of what "
                "is sent to them rather than being rejected.")
@@ -186,8 +194,11 @@ SECTIONS = (
         Field("provider", "choice", "", choices=PROVIDER_CHOICES),
         model_field("A cheap model is enough here - it is reading, not judging."),
         effort_field(),
-        Field("prompt_version", "text", "Bump this to run the pass again over "
-                                        "everything after editing the prompt."),
+        prompt_file_field(),
+        Field("prompt_version", "text", "A label for this pass's instructions. "
+                                        "Editing the prompt already re-reads "
+                                        "everything, so this is only for asking "
+                                        "for one without having changed a word."),
         Field("max_per_run", "int", "Most listings this pass handles in one run."),
     )),
 
@@ -202,8 +213,11 @@ SECTIONS = (
               choices=PROVIDER_CHOICES),
         model_field("Must be a model that can see images."),
         effort_field(),
-        Field("prompt_version", "text", "Bump this to run the pass again over "
-                                        "everything after editing the prompt."),
+        prompt_file_field(),
+        Field("prompt_version", "text", "A label for this pass's instructions. "
+                                        "Editing the prompt already re-reads "
+                                        "everything, so this is only for asking "
+                                        "for one without having changed a word."),
         Field("max_per_run", "int", "Most listings this pass handles in one run."),
         Field("max_photos_in", "int", "Photos this pass looks at. They are cheap "
                                       "here and expensive in pass 3, which is the "

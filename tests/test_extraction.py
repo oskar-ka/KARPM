@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from karpm import db, pipeline
-from karpm.ai import extract, provider
+from karpm.ai import extract, passes, provider
 from karpm.config import Config
 
 PNG = bytes.fromhex(
@@ -163,7 +163,9 @@ def test_a_second_run_replaces_rather_than_piles_up(conn):
         extract.run_pass(conn, "text", cfg, FakeProvider({"text": TEXT_ANSWER}))
 
     rows = conn.execute("SELECT * FROM extractions WHERE listing_id = '111'").fetchall()
-    assert len(rows) == 1 and rows[0]["prompt_version"] == "v2"
+    # The stored version carries the prompt's own hash after the configured
+    # one, which is what makes editing a prompt re-read everything.
+    assert len(rows) == 1 and rows[0]["prompt_version"].startswith("v2+")
 
 
 def test_a_failed_pass_stores_nothing(conn):
@@ -198,8 +200,8 @@ def test_an_edited_ad_is_read_again_but_its_photos_are_not(conn, tmp_path):
 
     listing(conn, description="Now with a new exhaust.")
 
-    assert db.extraction_backlog(conn, "text", conf.extract_text.prompt_version) == 1
-    assert db.extraction_backlog(conn, "photos", conf.extract_photos.prompt_version) == 0
+    assert db.extraction_backlog(conn, "text", passes.prompt_version("text", conf.extract_text)) == 1
+    assert db.extraction_backlog(conn, "photos", passes.prompt_version("photos", conf.extract_photos)) == 0
 
 
 def test_a_new_photo_sends_the_photos_back_but_not_the_text(conn, tmp_path):
@@ -218,8 +220,8 @@ def test_a_new_photo_sends_the_photos_back_but_not_the_text(conn, tmp_path):
     db.record_image_download(conn, image["id"], str(path), "sha", len(PNG))
     conn.commit()
 
-    assert db.extraction_backlog(conn, "photos", conf.extract_photos.prompt_version) == 1
-    assert db.extraction_backlog(conn, "text", conf.extract_text.prompt_version) == 0
+    assert db.extraction_backlog(conn, "photos", passes.prompt_version("photos", conf.extract_photos)) == 1
+    assert db.extraction_backlog(conn, "text", passes.prompt_version("text", conf.extract_text)) == 0
 
 
 def test_a_listing_waiting_to_be_refetched_is_left_alone(conn):
@@ -468,7 +470,7 @@ def test_extract_one_re_reads_something_already_read(one, conn, run_cli):
     editing a prompt."""
     conf = Config()
     extract.run_pass(conn, "text", conf.extract_text, FakeProvider({"text": TEXT_ANSWER}))
-    assert db.extraction_backlog(conn, "text", conf.extract_text.prompt_version) == 0
+    assert db.extraction_backlog(conn, "text", passes.prompt_version("text", conf.extract_text)) == 0
 
     fake = FakeProvider({"text": TEXT_ANSWER})
     run_cli(one, "extract-one", "111", "--text-only", fake=fake)
@@ -577,3 +579,71 @@ def test_every_default_effort_is_one_its_default_model_accepts():
     for cfg in (conf.extract_text, conf.extract_photos, conf.scoring):
         known = models.get(cfg.model)
         assert not known.effort or cfg.effort in known.effort, cfg.model
+
+
+# --- editing a prompt -------------------------------------------------------
+
+def test_a_prompt_file_replaces_the_built_in_one(conn, tmp_path):
+    cfg = Config().extract_text
+    cfg.prompt_file = str(tmp_path / "text.md")
+    Path(cfg.prompt_file).write_text("Read it. Say what it claims.", encoding="utf-8")
+
+    listing(conn)
+    fake = FakeProvider({"text": TEXT_ANSWER})
+    extract.run_pass(conn, "text", cfg, fake)
+    assert fake.seen[0].system == "Read it. Say what it claims."
+
+
+def test_an_empty_prompt_file_falls_back_rather_than_asking_nothing(conn, tmp_path):
+    cfg = Config().extract_text
+    cfg.prompt_file = str(tmp_path / "text.md")
+    Path(cfg.prompt_file).write_text("   \n", encoding="utf-8")
+
+    listing(conn)
+    fake = FakeProvider({"text": TEXT_ANSWER})
+    extract.run_pass(conn, "text", cfg, fake)
+    assert fake.seen[0].system.startswith("You read German motorcycle")
+
+
+def test_editing_the_prompt_makes_every_reading_stale(conn, tmp_path):
+    """Nothing about a listing changes when you rewrite how you ask about it,
+    so the findings have to be marked rather than left to be noticed - and
+    nobody remembers to bump prompt_version by hand."""
+    cfg = Config().extract_text
+    cfg.prompt_file = str(tmp_path / "text.md")
+    Path(cfg.prompt_file).write_text("Read it.", encoding="utf-8")
+
+    listing(conn)
+    extract.run_pass(conn, "text", cfg, FakeProvider({"text": TEXT_ANSWER}))
+    assert db.extraction_backlog(conn, "text", passes.prompt_version("text", cfg)) == 0
+
+    Path(cfg.prompt_file).write_text("Read it, and note the tyres.", encoding="utf-8")
+    assert db.extraction_backlog(conn, "text", passes.prompt_version("text", cfg)) == 1
+
+    fake = FakeProvider({"text": TEXT_ANSWER})
+    assert extract.run_pass(conn, "text", cfg, fake)["done"] == 1
+    assert fake.seen[0].system == "Read it, and note the tyres."
+
+
+def test_putting_the_prompt_back_makes_the_old_reading_current_again(conn, tmp_path):
+    """The key is the prompt's text, not a counter - so an edit you undo costs
+    nothing rather than a second read of everything."""
+    cfg = Config().extract_text
+    cfg.prompt_file = str(tmp_path / "text.md")
+    Path(cfg.prompt_file).write_text("Read it.", encoding="utf-8")
+    listing(conn)
+    extract.run_pass(conn, "text", cfg, FakeProvider({"text": TEXT_ANSWER}))
+
+    Path(cfg.prompt_file).write_text("Something else.", encoding="utf-8")
+    assert db.extraction_backlog(conn, "text", passes.prompt_version("text", cfg)) == 1
+    Path(cfg.prompt_file).write_text("Read it.", encoding="utf-8")
+    assert db.extraction_backlog(conn, "text", passes.prompt_version("text", cfg)) == 0
+
+
+def test_a_missing_prompt_file_is_not_a_complaint(conn, tmp_path, caplog):
+    """It is the ordinary state of a fresh install, not a fault."""
+    cfg = Config().extract_text
+    cfg.prompt_file = str(tmp_path / "never-written.md")
+    with caplog.at_level("WARNING"):
+        assert passes.load_prompt("text", cfg).startswith("You read German")
+    assert caplog.text == ""

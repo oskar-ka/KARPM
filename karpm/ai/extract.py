@@ -25,7 +25,13 @@ def run_pass(conn, kind: str, cfg, client: provider.Provider | None = None,
     # The queue is read before a provider is built: with nothing due there is
     # no reason to want an API key, and a run that only scrapes must not fail
     # for the lack of one.
-    due = db.listings_needing_extraction(conn, kind, cfg.prompt_version, cfg.max_per_run)
+    # The prompt is read once for the whole queue, and its text is part of the
+    # key that decides who is due: editing it is as much a change as bumping
+    # prompt_version by hand, and nobody remembers to do that by hand.
+    prompt = passes.load_prompt(kind, cfg)
+    version = passes.prompt_version(kind, cfg)
+
+    due = db.listings_needing_extraction(conn, kind, version, cfg.max_per_run)
     if not due:
         return {"kind": kind, "done": 0}
 
@@ -46,7 +52,7 @@ def run_pass(conn, kind: str, cfg, client: provider.Provider | None = None,
             break
 
         try:
-            read = read_one(conn, kind, cfg, row, engine)
+            read = read_one(conn, kind, cfg, row, engine, prompt)
         except provider.ProviderError as exc:
             log.error("%s pass failed for %s: %s", kind, row["id"], exc)
             failed += 1
@@ -59,7 +65,7 @@ def run_pass(conn, kind: str, cfg, client: provider.Provider | None = None,
             continue                    # nothing to look at after all
 
         data, reply = read
-        save(conn, kind, cfg, row, engine, data, reply)
+        save(conn, kind, cfg, row, engine, data, reply, version)
         done += 1
         tokens += reply.tokens
         log.info("  %s %s (%s tokens)", kind, row["id"], reply.tokens)
@@ -67,35 +73,37 @@ def run_pass(conn, kind: str, cfg, client: provider.Provider | None = None,
     return {"kind": kind, "done": done, "failed": failed, "tokens": tokens}
 
 
-def build_request(conn, kind: str, cfg, row) -> provider.Request | None:
+def build_request(conn, kind: str, cfg, row, prompt: str | None = None):
     """What one pass would ask about one listing. None if there is nothing to ask.
 
     Separate so `--show-prompt` renders the request that would really be sent
     rather than an approximation of it, which is the only thing that flag is for.
     """
-    return (passes.text_request(row, cfg) if kind == "text"
-            else passes.photo_request(conn, row, cfg))
+    return (passes.text_request(row, cfg, prompt) if kind == "text"
+            else passes.photo_request(conn, row, cfg, prompt))
 
 
-def read_one(conn, kind: str, cfg, row, engine) -> tuple[dict, provider.Reply] | None:
+def read_one(conn, kind: str, cfg, row, engine,
+             prompt: str | None = None) -> tuple[dict, provider.Reply] | None:
     """One pass over one listing, tidied but not stored. None if nothing to look at.
 
     A run and `extract-one` share this, so the single-listing command cannot
     drift into asking something subtly different from what a run asks.
     """
-    request = build_request(conn, kind, cfg, row)
+    request = build_request(conn, kind, cfg, row, prompt)
     if request is None:
         return None
     reply = engine.complete(request)
     return _tidy(kind, reply.data, conn, row, cfg), reply
 
 
-def save(conn, kind: str, cfg, row, engine, data: dict, reply: provider.Reply) -> None:
+def save(conn, kind: str, cfg, row, engine, data: dict, reply: provider.Reply,
+         version: str | None = None) -> None:
     """Store what a pass found, with the key that decides when it is read again."""
     db.save_extraction(
         conn, row["id"], kind, data,
         provider=engine.name, model=reply.model or cfg.model,
-        prompt_version=cfg.prompt_version,
+        prompt_version=version or passes.prompt_version(kind, cfg),
         source_hash=db._source_hash(conn, row, kind),
         input_tokens=reply.input_tokens, output_tokens=reply.output_tokens,
     )

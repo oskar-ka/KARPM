@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+{% block title %}prompts{% endblock %}
+{% block body %}
+<h1>prompts</h1>
+<p class="sub">Everything the three passes are told, in the order they run. The two
+  reading passes get their instructions from their own files; what you want out of a
+  bike is compiled into <code>{{ prefs_path }}</code> and given to pass 3 whole.</p>
+
+<form method="post">
+  {# Passes 1 and 2: one box each. The shape of these is still being worked out,
+     so they stay free text rather than being split into questions. #}
+  {% for pass_ in passes %}
+    <section class="panel">
+      <h2>{{ pass_.title }}
+        {% if not pass_.enabled %}<span class="tag warn">pass switched off</span>{% endif %}
+      </h2>
+      <p class="sub">{{ pass_.blurb }}</p>
+      <textarea name="prompt_{{ pass_.kind }}" rows="16" spellcheck="false"
+                class="prompt">{{ pass_.text }}</textarea>
+      <p class="note">Saved to <code>{{ pass_.path or 'nowhere - set prompt_file in the config' }}</code>.
+        Emptying it puts the built-in prompt back. Changing it makes every listing
+        due to be read again, so what is stored matches what was asked for.</p>
+    </section>
+  {% endfor %}
+
+  {# Pass 3: five questions instead of one blank page. #}
+  <section class="panel">
+    <h2>pass 3 - what you want</h2>
+    <p class="sub">The five parts below become one markdown file, which goes to the
+      scoring pass with every listing. Be concrete, and say what you do not care
+      about as well as what you do - it stops a listing being marked down for
+      something you would never notice.</p>
+
+    {% for part in parts %}
+      <div class="field stacked">
+        <label for="pref_{{ part.key }}">{{ part.heading }}</label>
+        <div class="control">
+          <textarea id="pref_{{ part.key }}" name="pref_{{ part.key }}" rows="6"
+                    spellcheck="false"
+                    placeholder="{{ part.placeholder }}">{{ values[part.key] }}</textarea>
+        </div>
+        <p class="note">{{ part.help }}</p>
+      </div>
+    {% endfor %}
+
+    {% if values.rest %}
+      <div class="field stacked">
+        <label for="pref_rest">the rest of the file</label>
+        <div class="control">
+          <textarea id="pref_rest" name="pref_rest" rows="8"
+                    spellcheck="false">{{ values.rest }}</textarea>
+        </div>
+        <p class="note">What was already in the file and is not one of the five
+          headings above - written by hand, or written before this page existed.
+          It is kept and still goes to the model; move it into a box above when
+          you get round to it.</p>
+      </div>
+    {% else %}
+      <input type="hidden" name="pref_rest" value="">
+    {% endif %}
+  </section>
+
+  <div class="actions">
+    <button class="primary">save</button>
+    <a class="button" href="{{ url_for('dashboard') }}">cancel</a>
+    <span class="muted">a changed prompt or preference re-reads or re-scores what
+      it invalidates, which costs credits</span>
+  </div>
+</form>
+{% endblock %}

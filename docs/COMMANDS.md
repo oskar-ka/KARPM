@@ -265,9 +265,13 @@ section in `config.toml`, its own model, its own `provider`, its own
 
 | Pass | Section | What it does | Goes stale when |
 |---|---|---|---|
-| 1 | `[extract_text]` | Reads the description and writes down what the seller claims: work done, faults admitted, what is included, what to ask about. | The ad's text or price changes. |
-| 2 | `[extract_photos]` | Looks at the photos, says what they show, and shortlists the few worth a second look. | A photo is added, removed or replaced. |
+| 1 | `[extract_text]` | Reads the description and writes down what the seller claims: work done, faults admitted, what is included, what to ask about. | The ad's text or price changes, or its prompt does. |
+| 2 | `[extract_photos]` | Looks at the photos, says what they show, and shortlists the few worth a second look. | A photo is added, removed or replaced, or its prompt changes. |
 | 3 | `[scoring]` | Weighs the hard facts, what passes 1 and 2 found, the shortlisted photos and the comparable prices against `preferences.md`. | The ad changes, `preferences.md` changes, or `scoring.prompt_version` changes. |
+
+All three are edited on the **prompts** page of the web UI — passes 1 and 2 as
+the instructions they are given, pass 3 as what you want out of a bike. See
+[The prompts page](#the-prompts-page).
 
 They are separate because they are different jobs — a model that is good at
 pulling `Reifen neu, Kette bei 40tkm` out of a paragraph need not be the one
@@ -561,7 +565,7 @@ logs at startup — that is what settles the two-config-files question.
 ## `web`
 
 Serve the web UI: the daemon's status, a sortable listings table, the photos and
-history behind each listing, and forms for the searches, `preferences.md` and
+history behind each listing, and forms for the searches, the prompts and
 every setting in `config.toml`.
 
 ```bash
@@ -621,6 +625,35 @@ purpose: a model's summary of what a seller claims is useful, but mixed in with
 the mileage read off the page it would be indistinguishable from something
 checked. Photos pass 2 shortlisted are outlined in the gallery, with its note on
 each photo underneath.
+
+### The prompts page
+
+Everything the three passes are told, in the order they run.
+
+Passes 1 and 2 get one text box each — their instructions, saved to the file named
+by `extract_text.prompt_file` and `extract_photos.prompt_file`. With no file
+there, or an empty one, the pass uses the prompt built into the code, so a fresh
+install works without writing anything and emptying the box puts the original
+back.
+
+**Editing a prompt re-reads every listing.** The prompt's own text is part of
+the key that decides whether stored findings are still current, so a changed
+prompt makes them all stale without anyone having to remember to bump
+`prompt_version`. That costs credits, and the page says how many listings it
+just queued. `karpm extract-one <id>` is the cheap way to try a wording on one
+ad first.
+
+Pass 3 is not a prompt but a description of what you want, and it is five boxes
+rather than one: **About the bike**, **What it needs**, **What I would like**,
+**What is not important**, and **Logistics**. They are compiled into
+`preferences.md` — the same file as before, with one `##` heading per box — and
+that whole file goes to the scoring pass with every listing. An empty box keeps
+its heading: "I do not care about this" is itself worth telling the model.
+
+A `preferences.md` written by hand, or written before this page existed, does not
+fit those five headings. Nothing is thrown away: whatever is not under a heading
+we know appears in a sixth box, **the rest of the file**, still goes to the
+model, and can be moved into the boxes above whenever you feel like it.
 
 ### Editing the settings
 

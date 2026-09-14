@@ -12,12 +12,16 @@ and a neutral block list; `provider.py` turns that into an API call.
 
 from __future__ import annotations
 
+import hashlib
+import logging
 from pathlib import Path
 
 from pydantic import BaseModel, Field
 
 from . import provider
 from .. import db
+
+log = logging.getLogger(__name__)
 
 # --- pass 1: what the description says ------------------------------------
 
@@ -73,7 +77,56 @@ class TextFindings(BaseModel):
         description="what the ad leaves out that a buyer would want answered")
 
 
-def text_request(row, cfg) -> provider.Request:
+# --- the prompts, and where they live -------------------------------------
+
+def defaults() -> dict:
+    """The prompts built into the code, by pass.
+
+    A function rather than a constant because it is also what seeds the file on
+    disk, and a caller that edits what it gets back must not be editing ours.
+    """
+    return {"text": TEXT_SYSTEM, "photos": PHOTO_SYSTEM}
+
+
+def load_prompt(kind: str, cfg) -> str:
+    """The instructions this pass runs with.
+
+    The file wins when there is one; otherwise the built-in. A fresh install has
+    no file, and a pass that refused to run without one would make editing the
+    prompt a requirement rather than an option.
+    """
+    path = Path(getattr(cfg, "prompt_file", "") or "")
+    # No file yet is the ordinary state of a fresh install, and not worth a
+    # word. A file that is there and will not be read is a different matter:
+    # running against instructions nobody chose would look exactly like running
+    # against the ones they wrote.
+    if str(path) and path.exists():
+        try:
+            text = path.read_text(encoding="utf-8").strip()
+            if text:
+                return text
+            log.warning("%s is empty, so the %s pass is using the built-in "
+                        "prompt", path, kind)
+        except OSError as exc:
+            log.warning("could not read the %s prompt from %s (%s); using the "
+                        "built-in one", kind, path, exc)
+    return defaults()[kind]
+
+
+def prompt_version(kind: str, cfg) -> str:
+    """The key that decides whether stored findings are still current.
+
+    The configured version and the prompt itself, together: editing the prompt
+    is exactly as much of a change as bumping the version by hand, and nobody
+    remembers to bump it by hand.
+    """
+    digest = hashlib.sha256(load_prompt(kind, cfg).encode("utf-8")).hexdigest()[:8]
+    return f"{cfg.prompt_version}+{digest}"
+
+
+# --- pass 1 and 2 requests -------------------------------------------------
+
+def text_request(row, cfg, prompt: str | None = None) -> provider.Request:
     body = [
         f"Title: {row['title']}",
         f"Price: {row['price_eur']} EUR" if row["price_eur"] else "Price: not stated",
@@ -82,7 +135,7 @@ def text_request(row, cfg) -> provider.Request:
         row["description"] or "(the ad has no description)",
     ]
     return provider.Request(
-        system=TEXT_SYSTEM,
+        system=prompt if prompt is not None else load_prompt("text", cfg),
         blocks=[provider.text("\n".join(body))],
         schema=TextFindings,
         model=cfg.model,
@@ -144,7 +197,7 @@ class PhotoFindings(BaseModel):
                                   "condition from at all")
 
 
-def photo_request(conn, row, cfg) -> provider.Request | None:
+def photo_request(conn, row, cfg, prompt: str | None = None) -> provider.Request | None:
     """None when there is nothing to look at."""
     shown = []
     for image in db.listing_images(conn, row["id"])[: cfg.max_photos_in]:
@@ -163,7 +216,7 @@ def photo_request(conn, row, cfg) -> provider.Request | None:
         blocks.append(provider.image(path))
 
     return provider.Request(
-        system=PHOTO_SYSTEM,
+        system=prompt if prompt is not None else load_prompt("photos", cfg),
         blocks=blocks,
         schema=PhotoFindings,
         model=cfg.model,

@@ -224,6 +224,12 @@ preferences.md
 # Unanchored it also swallowed karpm/data/, the reference tables shipped with
 # the package, which would then be missing from every install.
 /data/
+
+# Prompts written by the prompts page. Yours, like preferences.md and
+# config.toml - the built-in prompts live in karpm/ai/passes.py. Anchored, so
+# a package directory called prompts/ would not be swallowed the way karpm/data
+# once was.
+/prompts/
 tests/fixtures/live_*.html
 # ...except the trimmed captures committed as regression fixtures.
 !tests/fixtures/live_search_astro.html

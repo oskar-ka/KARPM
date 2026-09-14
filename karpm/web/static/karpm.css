@@ -97,6 +97,18 @@ form.inline { display: inline; }
 .red_flags_json { color: var(--bad); }
 .pager { display: flex; gap: 14px; align-items: center; color: var(--muted); }
 
+/* A prompt is a paragraph, not a setting: full width, and monospaced so the
+   line breaks you put in are the line breaks the model gets. */
+textarea.prompt { width: 100%; font: 13px/1.5 ui-monospace, "SF Mono", Menlo, monospace; }
+
+/* The five preference boxes: the label sits above its box rather than beside
+   it, because the answers are paragraphs and the boxes need the width. */
+.field.stacked { grid-template-columns: 1fr; gap: 4px; }
+.field.stacked > label { font-family: inherit; font-size: 14px; font-weight: 600;
+                         padding-top: 0; }
+.field.stacked textarea { width: 100%; }
+.field.stacked .note { max-width: 70ch; margin-top: 2px; }
+
 /* --- settings forms: name on the left, control, note on the right --------- */
 .field { display: grid; grid-template-columns: 15rem minmax(12rem, 26rem) 1fr;
          gap: 14px; align-items: start; padding: 7px 0;

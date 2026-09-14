@@ -154,6 +154,9 @@ class ExtractTextConfig:
     provider: str = "anthropic"
     model: str = "claude-haiku-4-5"
     effort: str = "medium"
+    # The pass's instructions. Missing means "use the one built into the code",
+    # which is what a fresh install has until the prompts page saves one.
+    prompt_file: str = "prompts/extract_text.md"
     prompt_version: str = "v1"
     max_per_run: int = 200
 
@@ -172,6 +175,9 @@ class ExtractPhotosConfig:
     provider: str = "anthropic"
     model: str = "claude-haiku-4-5"
     effort: str = "medium"
+    # The pass's instructions. Missing means "use the one built into the code",
+    # which is what a fresh install has until the prompts page saves one.
+    prompt_file: str = "prompts/extract_photos.md"
     prompt_version: str = "v1"
     max_per_run: int = 200
     # How many photos this pass looks at, and how many it passes on.

@@ -4,13 +4,15 @@ Everything here runs against a real database built by the fake-fetcher
 pipeline, so the templates are rendered with the shapes they get in practice.
 """
 
+import html
 import json
 import re
 
 import pytest
 
 from karpm import db, pipeline
-from karpm.config import load_config
+from karpm.ai import passes
+from karpm.config import Config, load_config
 from karpm.web import create_app
 from tests.test_pipeline import FakeFetcher, SEARCH_URL
 
@@ -85,7 +87,7 @@ def opened(conf_path):
 
 @pytest.mark.parametrize("path", [
     "/", "/status-fragment", "/listings", "/listing/2847612345",
-    "/searches", "/preferences", "/config",
+    "/searches", "/prompts", "/config",
 ])
 def test_every_page_renders(client, path):
     assert client.get(path).status_code == 200
@@ -230,9 +232,30 @@ def test_quotes_in_a_search_name_do_not_break_the_file(client, app):
     assert load_config(config_path).searches[0].name == 'the "good" one'
 
 
+def prompt_form(client, overrides=None):
+    """The prompts page as it would submit itself, with a few boxes changed."""
+    from karpm import preferences as pr
+    data = {f"pref_{part.key}": "" for part in pr.PARTS}
+    data["pref_rest"] = ""
+    page = client.get("/prompts").get_data(as_text=True)
+    for kind in ("text", "photos"):
+        found = re.search(rf'name="prompt_{kind}"[^>]*>(.*?)</textarea>', page, re.S)
+        # Unescaped, because that is what a browser submits. Left escaped, every
+        # save would look like an edit and rewrite a file nobody touched.
+        data[f"prompt_{kind}"] = html.unescape(found.group(1)) if found else ""
+    data.update(overrides or {})
+    return data
+
+
+def test_the_old_preferences_url_still_goes_somewhere(client):
+    """It was the name of this page for its whole life; someone has bookmarked it."""
+    resp = client.get("/preferences")
+    assert resp.status_code == 302 and resp.headers["Location"].endswith("/prompts")
+
+
 def test_preferences_are_saved_with_a_backup(client, app):
     _, config_path, tmp_path = app
-    client.post("/preferences", data={"text": "# New\n\nSomething else.\n"})
+    client.post("/prompts", data=prompt_form(client, {"pref_about": "Something else."}))
     prefs = tmp_path / "preferences.md"
     assert "Something else." in prefs.read_text(encoding="utf-8")
     assert "A cheap MT-07." in prefs.with_suffix(".md.bak").read_text(encoding="utf-8")
@@ -739,11 +762,12 @@ def test_the_dashboard_counts_what_is_queued(client, app):
 def test_editing_preferences_marks_the_listings_and_says_so(client, app):
     _, config_path, tmp_path = app
     # The first save only records the file; it is not a change to it.
-    client.post("/preferences", data={"text": "# Want\n\nA GS.\n"})
-    resp = client.post("/preferences", data={"text": "# Want\n\nA GS under 6000.\n"},
+    client.post("/prompts", data=prompt_form(client, {"pref_about": "A GS."}))
+    resp = client.post("/prompts",
+                       data=prompt_form(client, {"pref_about": "A GS under 6000."}),
                        follow_redirects=True)
     body = resp.get_data(as_text=True)
-    assert "marked for re-scoring" in body
+    assert "to score again" in body
     assert "costs credits" in body
     with opened(config_path) as conn:
         assert conn.execute("SELECT SUM(needs_rescore) n FROM listings").fetchone()["n"] == 2
@@ -751,10 +775,10 @@ def test_editing_preferences_marks_the_listings_and_says_so(client, app):
 
 def test_saving_the_same_preferences_marks_nothing(client, app):
     _, config_path, _ = app
-    client.post("/preferences", data={"text": "# Want\n\nA GS.\n"})
-    resp = client.post("/preferences", data={"text": "# Want\n\nA GS.\n"},
+    client.post("/prompts", data=prompt_form(client, {"pref_about": "A GS."}))
+    resp = client.post("/prompts", data=prompt_form(client, {"pref_about": "A GS."}),
                        follow_redirects=True)
-    assert b"nothing was marked" in resp.get_data()
+    assert b"nothing changed" in resp.get_data()
     with opened(config_path) as conn:
         assert conn.execute("SELECT SUM(needs_rescore) n FROM listings").fetchone()["n"] == 0
 
@@ -1049,7 +1073,8 @@ def _store_findings(conf_path, listing_id="2847612345"):
          "recent_work": [{"what": "chain and sprockets", "when": "40000 km",
                           "quote": "Kette und Ritzel bei 40tkm neu"}],
          "selling_reason": "buying a bigger bike", "negotiable": True},
-        provider="anthropic", model="claude-haiku-4-5", prompt_version="v1",
+        provider="anthropic", model="claude-haiku-4-5",
+        prompt_version=passes.prompt_version("text", Config().extract_text),
         source_hash=row["content_hash"])
     db.save_extraction(
         conn, listing_id, "photos",
@@ -1058,7 +1083,8 @@ def _store_findings(conf_path, listing_id="2847612345"):
          "photo_notes": [{"position": 0, "shows": "left side",
                           "concern": "scuffed bar end"}],
          "shortlist": [0]},
-        provider="anthropic", model="claude-haiku-4-5", prompt_version="v1",
+        provider="anthropic", model="claude-haiku-4-5",
+        prompt_version=passes.prompt_version("photos", Config().extract_photos),
         source_hash=db.image_set_hash(conn, listing_id))
     conn.commit()
     conn.close()
@@ -1180,3 +1206,95 @@ def test_a_blank_model_is_refused_rather_than_written(client, app):
     assert response.status_code == 200          # back with the error, not saved
     assert "this cannot be empty" in response.get_data(as_text=True)
     assert load_config(config_path).scoring.model == "claude-opus-5"
+
+
+# --- the prompts page ----------------------------------------------------
+
+def test_the_prompts_page_shows_all_three_passes(client):
+    body = client.get("/prompts").get_data(as_text=True)
+    assert 'name="prompt_text"' in body and 'name="prompt_photos"' in body
+    # The built-in prompt, since no file has been written yet.
+    assert "You read German motorcycle classified ads" in body
+    for heading in ("About the bike", "What it needs", "What I would like",
+                    "What is not important", "Logistics"):
+        assert heading in body
+
+
+def test_editing_a_pass_prompt_writes_its_file(client, app, tmp_path):
+    _, config_path, work = app
+    config_path.write_text(
+        config_path.read_text(encoding="utf-8")
+        + f'\n[extract_text]\nprompt_file = "{work / "prompts" / "text.md"}"\n',
+        encoding="utf-8")
+
+    client.post("/prompts", data=prompt_form(
+        client, {"prompt_text": "Read the ad. Say what it claims."}))
+
+    written = (work / "prompts" / "text.md")
+    assert written.read_text(encoding="utf-8").strip() == "Read the ad. Say what it claims."
+
+
+def test_an_edited_prompt_makes_every_listing_due_again(client, app):
+    """Nothing about a listing changes when you rewrite how you ask about it,
+    so the stored findings have to be marked rather than left to be noticed."""
+    from karpm.ai import passes
+    from karpm.config import load_config as load
+
+    _, config_path, work = app
+    config_path.write_text(
+        config_path.read_text(encoding="utf-8")
+        + f'\n[extract_text]\nprompt_file = "{work / "prompts" / "text.md"}"\n',
+        encoding="utf-8")
+    before = passes.prompt_version("text", load(config_path).extract_text)
+
+    client.post("/prompts", data=prompt_form(client, {"prompt_text": "Something else."}))
+
+    after = passes.prompt_version("text", load(config_path).extract_text)
+    assert after != before, "the prompt's own text is part of the key"
+
+
+def test_the_five_boxes_become_the_file_pass_three_reads(client, app):
+    _, _, work = app
+    client.post("/prompts", data=prompt_form(client, {
+        "pref_about": "A do-everything travel enduro.",
+        "pref_needs": "- Under 60,000 km",
+        "pref_logistics": "- Up to 300 km away",
+    }))
+    written = (work / "preferences.md").read_text(encoding="utf-8")
+    assert "## About the bike\n\nA do-everything travel enduro." in written
+    assert "## What it needs\n\n- Under 60,000 km" in written
+    assert "## Logistics\n\n- Up to 300 km away" in written
+    # An empty box keeps its heading: "I do not care about this" is worth saying.
+    assert "## What is not important" in written
+
+
+def test_the_boxes_come_back_filled_in(client, app):
+    client.post("/prompts", data=prompt_form(client, {"pref_needs": "- Full history"}))
+    body = client.get("/prompts").get_data(as_text=True)
+    assert "- Full history" in body
+
+
+def test_a_hand_written_preferences_file_is_not_thrown_away(client, app):
+    """It is a file people wrote in long before it had boxes. A page that loses
+    it on the first save would be worse than no page."""
+    _, _, work = app
+    (work / "preferences.md").write_text(
+        "I want a cheap GS.\n\n## My own heading\n\nkeep this\n", encoding="utf-8")
+
+    body = client.get("/prompts").get_data(as_text=True)
+    assert "I want a cheap GS." in body and "keep this" in body
+
+    client.post("/prompts", data=prompt_form(client, {
+        "pref_about": "A GS.",
+        "pref_rest": "I want a cheap GS.\n\n## My own heading\n\nkeep this",
+    }))
+    after = (work / "preferences.md").read_text(encoding="utf-8")
+    assert "A GS." in after and "keep this" in after and "I want a cheap GS." in after
+
+
+def test_a_template_edit_does_not_need_a_restart(app, tmp_path):
+    """Jinja caches a template on first render. Without auto-reload, a running
+    `karpm web` served the version it started with for ever - so an update to
+    the UI looked like an update that had not worked."""
+    application, _, _ = app
+    assert application.jinja_env.auto_reload is True
