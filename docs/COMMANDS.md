@@ -379,6 +379,23 @@ karpm daemon
 No options. It reads run history from the database, so a restart does not
 repeat a slot it already completed. Stops cleanly on `SIGTERM`/`SIGINT`.
 
+It says it is alive every five minutes, so a terminal running it does not look
+hung — the first line comes immediately:
+
+```
+alive - next scrape 19:30, digest 08:00 tomorrow, score with each scrape
+alive - next scrape 19:30, digest 08:00 tomorrow, scoring off, 4 to re-score
+alive - next scrape 07:30 tomorrow, digest 08:00 tomorrow, SCHEDULE PAUSED
+```
+
+Anything outstanding is on the end of the line: listings waiting to be re-fetched
+or re-scored, commands queued from the web UI, and whether the schedule is
+paused — which is the commonest answer to "why has it not scraped".
+
+Five minutes is the same interval after which the web UI calls the daemon dead,
+so a terminal quiet for longer than one of these has actually gone quiet. The
+heartbeat itself is written every 30 seconds; `-v` logs each one.
+
 ---
 
 ## `web`

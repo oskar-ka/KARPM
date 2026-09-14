@@ -3,7 +3,7 @@
 import pathlib
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import pytest
 
@@ -461,3 +461,75 @@ def test_a_broken_config_mid_run_does_not_stop_scoring(ready, tmp_path):
     path = tmp_path / "config.toml"
     path.write_text("this is not [ toml", encoding="utf-8")
     assert pipeline.scoring_switch(path)() is True
+
+
+# --- saying it is alive ---------------------------------------------------
+
+def test_the_status_line_names_what_it_is_waiting_for(ready):
+    conf, conn = ready
+    when = {"scrape": datetime.now().replace(hour=19, minute=30),
+            "digest": None, "score": None}
+    line = daemon.status_line(conn, when, scoring_on=True)
+    assert line.startswith("alive - ")
+    assert "next scrape 19:30" in line
+    assert "digest never" in line
+    assert "score with each scrape" in line
+
+
+def test_the_status_line_says_when_scoring_is_off(ready):
+    _, conn = ready
+    line = daemon.status_line(conn, {"scrape": None, "digest": None, "score": None},
+                              scoring_on=False)
+    assert "scoring off" in line
+
+
+def test_the_status_line_counts_the_backlog(ready):
+    conf, conn = ready
+    pipeline.run_scrape(conf, conn, FakeFetcher())
+    db.mark_for_refetch(conn, "2847612345")
+    db.queue_command(conn, "digest")
+
+    line = daemon.status_line(conn, {"scrape": None, "digest": None, "score": None}, True)
+
+    assert "1 to re-fetch" in line
+    assert "queued command" in line
+
+
+def test_a_paused_schedule_is_impossible_to_miss(ready):
+    """The commonest reason for "why has it not scraped"."""
+    _, conn = ready
+    db.set_state(conn, "paused", "1")
+    line = daemon.status_line(conn, {"scrape": None, "digest": None, "score": None}, True)
+    assert "SCHEDULE PAUSED" in line
+
+
+def test_an_idle_daemon_says_only_what_matters(ready):
+    """Nothing queued, nothing paused: no trailing clutter."""
+    _, conn = ready
+    line = daemon.status_line(conn, {"scrape": None, "digest": None, "score": None}, True)
+    assert "queued" not in line and "re-fetch" not in line
+
+
+@pytest.mark.parametrize("delta, expected", [
+    (timedelta(hours=2), "%H:%M"),
+    (timedelta(days=1), "tomorrow"),
+    (timedelta(days=5), "%d %b"),
+])
+def test_a_time_is_written_the_way_you_would_read_it(delta, expected):
+    moment = datetime.now() + delta
+    shown = daemon._when(moment)
+    assert (moment.strftime(expected) in shown) if "%" in expected else (expected in shown)
+
+
+def test_no_next_fire_reads_as_never():
+    assert daemon._when(None) == "never"
+
+
+def test_the_status_line_appears_without_waiting(ready, monkeypatch, caplog):
+    """The first one comes immediately, so a fresh terminal is not silent."""
+    conf, conn = ready
+    conf.schedule.scrape_at = []
+    conf.schedule.digest_at = []
+    with caplog.at_level("INFO"):
+        _run_briefly(conf, conn, seconds=2.0)
+    assert "alive - " in caplog.text

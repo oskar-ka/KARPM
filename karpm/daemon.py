@@ -23,6 +23,12 @@ log = logging.getLogger(__name__)
 # web.HEARTBEAT_STALE_AFTER, so this has to be comfortably shorter than that.
 HEARTBEAT_EVERY_S = 30
 
+# How often it says so out loud. A line every 30 seconds is 2,880 a day and
+# nobody reads the 2,880th; this is the same five minutes after which the web UI
+# would call the daemon dead, so a terminal that has gone quiet for longer than
+# one of these has actually gone quiet. Run with -v for every beat.
+STATUS_EVERY_S = 300
+
 _stop = False
 
 
@@ -112,7 +118,7 @@ def _handle_pending_command(conf, conn, config_path=None) -> bool:
     return True
 
 
-def _beat(db_path, stop: threading.Event, every: int = HEARTBEAT_EVERY_S) -> None:
+def _beat(db_path, stop: threading.Event, every: int) -> None:
     """Write the heartbeat on its own connection until asked to stop.
 
     It is a thread rather than a line in the main loop because a scrape or a
@@ -125,12 +131,48 @@ def _beat(db_path, stop: threading.Event, every: int = HEARTBEAT_EVERY_S) -> Non
         while True:
             try:
                 db.set_state(conn, "heartbeat", db.utcnow())
+                log.debug("heartbeat")
             except Exception:               # a locked database is not fatal here
                 log.debug("heartbeat write failed", exc_info=True)
             if stop.wait(every):
                 return
     finally:
         conn.close()
+
+
+def _when(moment: datetime | None) -> str:
+    """A next-fire time as something worth reading in a log line."""
+    if moment is None:
+        return "never"
+    today = date.today()
+    stamp = moment.strftime("%H:%M")
+    if moment.date() == today:
+        return stamp
+    if (moment.date() - today).days == 1:
+        return f"{stamp} tomorrow"
+    return moment.strftime("%d %b %H:%M")
+
+
+def status_line(conn, next_fires: dict, scoring_on: bool) -> str:
+    """One line saying the daemon is alive and what it is waiting for."""
+    parts = [f"next scrape {_when(next_fires['scrape'])}",
+             f"digest {_when(next_fires['digest'])}"]
+    parts.append("scoring off" if not scoring_on else
+                 f"score {_when(next_fires['score'])}"
+                 if next_fires["score"] else "score with each scrape")
+
+    counts = db.pending_counts(conn)
+    waiting = [f"{counts[key]} to {label}"
+               for key, label in (("refetch", "re-fetch"), ("rescore", "re-score"))
+               if counts[key]]
+    queued = len([c for c in db.recent_commands(conn, 20) if c["status"] == "pending"])
+    if queued:
+        waiting.append(f"{queued} queued command(s)")
+    if db.is_paused(conn):
+        waiting.append("SCHEDULE PAUSED")
+    if waiting:
+        parts.append("; ".join(waiting))
+    return "alive - " + ", ".join(parts)
 
 
 def _fire_due(conn, kind: str, times: list[tuple[int, int]], action) -> bool:
@@ -167,10 +209,15 @@ def run_forever(conf, conn, poll_seconds: int = 30, config_path: str | None = No
     log.info("daemon started - scraping at %s, digest at %s, scoring %s",
              conf.schedule.scrape_at or "never",
              conf.schedule.digest_at or "never",
-             conf.schedule.score_at or "with each scrape")
+             "off" if not conf.scoring.enabled
+             else conf.schedule.score_at or "with each scrape")
 
+    last_status = None                  # None, not 0: monotonic() starts near zero
+                                        # on a freshly booted Pi, and "0 is long
+                                        # ago" would hold the first line back
     stop_beating = threading.Event()
-    beat = threading.Thread(target=_beat, args=(conf.db_path, stop_beating),
+    beat = threading.Thread(target=_beat,
+                            args=(conf.db_path, stop_beating, HEARTBEAT_EVERY_S),
                             name="karpm-heartbeat", daemon=True)
     beat.start()
 
@@ -203,10 +250,19 @@ def run_forever(conf, conn, poll_seconds: int = 30, config_path: str | None = No
             _fire_due(conn, "score", score_times,
                       lambda: pipeline.run_scoring_and_alerts(conf, conn, config_path))
 
-        for key, times in (("next_scrape", scrape_times), ("next_digest", digest_times),
-                           ("next_score", score_times)):
+        next_fires = {}
+        for name, key, times in (("scrape", "next_scrape", scrape_times),
+                                 ("digest", "next_digest", digest_times),
+                                 ("score", "next_score", score_times)):
             when = _next_fire(times, datetime.now())
+            next_fires[name] = when
             db.set_state(conn, key, when.isoformat() if when else "not scheduled")
+
+        # Say so periodically, so a terminal running this does not look hung.
+        if last_status is None or time.monotonic() - last_status >= STATUS_EVERY_S:
+            log.info("%s", status_line(conn, next_fires, conf.scoring.enabled))
+            last_status = time.monotonic()
+
         _sleep(poll_seconds)
 
     stop_beating.set()
