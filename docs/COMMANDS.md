@@ -69,6 +69,7 @@ from a `.env` file in the working directory: `ANTHROPIC_API_KEY` for scoring and
 | [`scrape`](#scrape) | yes | no | no |
 | [`images`](#images) | yes | no | no |
 | [`extract`](#extract) | yes (API) | **yes** | no |
+| [`extract-one`](#extract-one) | yes (API) | **yes** | no |
 | [`score`](#score) | yes (API) | **yes** | **yes** (instant alerts) |
 | [`score-one`](#score-one) | yes (API) | **yes** | no |
 | [`run`](#run) | yes | **yes** | **yes** |
@@ -325,6 +326,40 @@ listing, so unticking a pass during a long run stops it at the next listing.
 
 **Exit code 1** if any listing failed. A failure stores nothing — a row saying
 "read, found nothing" would stop it ever being read again.
+
+---
+
+## `extract-one`
+
+Read a single listing by id. The cheap way to try a change to a pass's prompt:
+one ad, one call, and nothing written unless you say so.
+
+```bash
+karpm extract-one 3422210980 --show-prompt     # free: prints both prompts, no API call
+karpm extract-one 3422210980                   # reads it and prints what it found
+karpm extract-one 3422210980 --save            # ...and stores it
+karpm extract-one 3422210980 --photos-only     # pass 2 alone
+```
+
+| Argument / flag | Default | Meaning |
+|---|---|---|
+| `listing_id` | required | Kleinanzeigen ad id, as stored in `listings.id`. |
+| `--text-only` | off | Pass 1 only. |
+| `--photos-only` | off | Pass 2 only. |
+| `--show-prompt` | off | Print what would be sent and exit without calling the API. Costs nothing. |
+| `--save` | off | Store what it finds. Without it the findings are printed only. |
+
+Unlike [`extract`](#extract) it does not care whether the listing is due. Naming
+one by id is the explicit instruction, and re-reading something already read is
+most of the point when you are editing a prompt. For the same reason it stores
+nothing by default: a trial that overwrites the stored reading is not a trial.
+
+The findings go to stdout and everything else — token counts, "saved", why a
+pass had nothing to look at — to stderr, so `karpm extract-one <id> | jq` works.
+
+**Exit code 1** if the listing id is not in the database, or if a pass failed.
+A pass with nothing to look at (an ad whose photos have not downloaded) says so
+and is not a failure.
 
 ---
 
@@ -674,6 +709,7 @@ karpm init
 karpm trial --url "<your search url>" --limit 5 --make BMW --model "R 1200 GS"
 
 # tune the preferences without spending anything
+karpm extract-one <id> --show-prompt
 karpm score-one <id> --show-prompt
 
 # once happy

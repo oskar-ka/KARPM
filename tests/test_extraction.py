@@ -410,3 +410,99 @@ def test_the_scoring_pass_is_shown_the_shortlist_not_the_first_few(conn, tmp_pat
     chosen = [b["path"] for b in request.blocks if b["type"] == "image"]
 
     assert [Path(p).name for p in chosen] == ["111-4.png", "111-5.png"]
+
+
+# --- extract-one -----------------------------------------------------------
+
+def _config_for(tmp_path):
+    config = tmp_path / "config.toml"
+    config.write_text(f'db_path = "{tmp_path / "t.db"}"\n', encoding="utf-8")
+    return config
+
+
+@pytest.fixture
+def one(conn, tmp_path):
+    """A database with one listing and its photos, and a config pointing at it."""
+    listing(conn)
+    with_photos(conn, tmp_path)
+    conn.commit()
+    return _config_for(tmp_path)
+
+
+@pytest.fixture
+def run_cli(monkeypatch):
+    """`karpm ...` with the fake provider behind whatever it asks for."""
+    def run(config, *argv, fake=None):
+        from karpm import cli
+        if fake is not None:
+            monkeypatch.setattr(provider, "get", lambda name: fake)
+        return cli.main(["-c", str(config), *argv])
+    return run
+
+
+def test_extract_one_reads_the_listing_you_name(one, capsys, run_cli):
+    fake = FakeProvider({"text": TEXT_ANSWER, "photos": PHOTO_ANSWER})
+    assert run_cli(one, "extract-one", "111", fake=fake) == 0
+
+    out = capsys.readouterr().out
+    assert "A tidy GS with a fresh service." in out
+    assert "Clean, photographed in a garage." in out
+    assert len(fake.seen) == 2
+
+
+def test_extract_one_stores_nothing_unless_you_ask(one, conn, run_cli):
+    """The point of it is trying a prompt change, and a trial that overwrites
+    the stored reading is not a trial."""
+    run_cli(one, "extract-one", "111", "--text-only",
+         fake=FakeProvider({"text": TEXT_ANSWER}))
+    assert db.get_extraction(conn, "111", "text") is None
+
+    run_cli(one, "extract-one", "111", "--text-only", "--save",
+         fake=FakeProvider({"text": TEXT_ANSWER}))
+    assert db.get_extraction(conn, "111", "text")["data"]["summary"] == TEXT_ANSWER["summary"]
+
+
+def test_extract_one_re_reads_something_already_read(one, conn, run_cli):
+    """`extract` skips a listing that is up to date. Naming one by id is the
+    explicit instruction, and re-reading is most of the point when you are
+    editing a prompt."""
+    conf = Config()
+    extract.run_pass(conn, "text", conf.extract_text, FakeProvider({"text": TEXT_ANSWER}))
+    assert db.extraction_backlog(conn, "text", conf.extract_text.prompt_version) == 0
+
+    fake = FakeProvider({"text": TEXT_ANSWER})
+    run_cli(one, "extract-one", "111", "--text-only", fake=fake)
+    assert len(fake.seen) == 1
+
+
+def test_extract_one_show_prompt_costs_nothing(one, capsys, run_cli):
+    fake = FakeProvider({"text": TEXT_ANSWER, "photos": PHOTO_ANSWER})
+    assert run_cli(one, "extract-one", "111", "--show-prompt", fake=fake) == 0
+
+    assert fake.seen == [], "--show-prompt must not call the API"
+    out = capsys.readouterr().out
+    assert "Kette und Ritzel" in out                 # the ad, as pass 1 gets it
+    assert "3 photo(s) would be attached" in out     # what pass 2 would be sent
+
+
+def test_extract_one_on_an_unknown_id_says_so(one, capsys, run_cli):
+    assert run_cli(one, "extract-one", "9999999999") == 1
+    assert "not found" in capsys.readouterr().err
+
+
+def test_extract_one_says_when_there_is_nothing_to_look_at(tmp_path, capsys, run_cli):
+    """An ad whose photos all failed to download is not an ad with no photos,
+    and neither is a silent success."""
+    conn = db.connect(tmp_path / "t.db")
+    db.init_db(conn)
+    listing(conn)
+    config = _config_for(tmp_path)
+
+    assert run_cli(config, "extract-one", "111", "--photos-only",
+                fake=FakeProvider()) == 0
+    assert "nothing to look at" in capsys.readouterr().err
+
+
+def test_extract_one_reports_a_failure_rather_than_exiting_clean(one, capsys, run_cli):
+    assert run_cli(one, "extract-one", "111", "--text-only",
+                fake=FakeProvider(fail=True)) == 1

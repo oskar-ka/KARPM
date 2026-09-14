@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 
 from . import daemon, db, images, mailer, pipeline, scoring, trial
-from .ai import extract
+from .ai import extract, provider
 from .config import SearchConfig, load_config
 from .http import Blocked, Fetcher
 from .parse.detail import parse_detail_page
@@ -85,31 +85,95 @@ def cmd_scrape(args) -> int:
     return 0
 
 
-def _prompt_text(scorer, conn, row) -> str:
-    """The text pass 3 would actually be sent, photos excepted.
+def _render_prompt(request) -> str:
+    """The text a pass would actually be sent, photos excepted.
 
-    Built through the scorer rather than assembled here, or it would drift from
-    what is really sent - which is exactly what --show-prompt exists to show.
+    Rendered from the request the pass itself builds rather than assembled here,
+    or it would drift from what is really sent - which is exactly what
+    --show-prompt exists to show.
     """
-    request = scorer.build_request(conn, row)
     parts = [block["text"] for block in request.blocks if block["type"] == "text"]
     photos = sum(1 for block in request.blocks if block["type"] == "image")
     return "\n".join(parts) + f"\n\n[{photos} photo(s) would be attached]"
 
 
+def _prompt_text(scorer, conn, row) -> str:
+    return _render_prompt(scorer.build_request(conn, row))
+
+
+def _extract_kinds(args) -> tuple[str, ...]:
+    """Which passes a --text-only / --photos-only pair asks for."""
+    if args.text_only:
+        return ("text",)
+    if args.photos_only:
+        return ("photos",)
+    return ("text", "photos")
+
+
+def _extract_config(conf) -> dict:
+    return {"text": conf.extract_text, "photos": conf.extract_photos}
+
+
 def cmd_extract(args) -> int:
     """Passes 1 and 2 on their own, without scraping or scoring."""
     conf, conn = _open(args)
-    wanted = ("text", "photos")
-    if args.text_only:
-        wanted = ("text",)
-    elif args.photos_only:
-        wanted = ("photos",)
-    cfg_for = {"text": conf.extract_text, "photos": conf.extract_photos}
-    result = {kind: extract.run_pass(conn, kind, cfg_for[kind]) for kind in wanted}
+    cfg_for = _extract_config(conf)
+    result = {kind: extract.run_pass(conn, kind, cfg_for[kind])
+              for kind in _extract_kinds(args)}
     print(json.dumps(result, indent=2))
     conn.close()
     return 1 if any(r.get("failed") for r in result.values()) else 0
+
+
+def cmd_extract_one(args) -> int:
+    """Read a single listing - the cheap way to try a prompt change.
+
+    Unlike `extract`, it does not care whether the listing is due: asking for
+    one by id is the explicit instruction, and re-reading something already read
+    is most of the point when you are editing a prompt.
+    """
+    conf, conn = _open(args)
+    row = db.get_listing(conn, args.listing_id)
+    if row is None:
+        print(f"listing {args.listing_id} not found", file=sys.stderr)
+        conn.close()
+        return 1
+
+    cfg_for = _extract_config(conf)
+    failed = False
+    for kind in _extract_kinds(args):
+        cfg = cfg_for[kind]
+        request = extract.build_request(conn, kind, cfg, row)
+        if request is None:
+            print(f"{kind}: nothing to look at - no photos have downloaded for "
+                  f"this listing", file=sys.stderr)
+            continue
+
+        if args.show_prompt:
+            print("=" * 72)
+            print(f"PASS {'1 (description)' if kind == 'text' else '2 (photos)'} "
+                  f"FOR {row['id']} (not sent - no API call)")
+            print("=" * 72)
+            print(_render_prompt(request))
+            continue
+
+        engine = provider.get(cfg.provider)
+        try:
+            read = extract.read_one(conn, kind, cfg, row, engine)
+        except provider.ProviderError as exc:
+            print(f"{kind}: {exc}", file=sys.stderr)
+            failed = True
+            continue
+        data, reply = read
+        print(json.dumps({kind: data}, indent=2, ensure_ascii=False))
+        print(f"{reply.input_tokens} in / {reply.output_tokens} out", file=sys.stderr)
+        if args.save:
+            extract.save(conn, kind, cfg, row, engine, data, reply)
+            conn.commit()
+            print(f"{kind}: saved", file=sys.stderr)
+
+    conn.close()
+    return 1 if failed else 0
 
 
 def cmd_score(args) -> int:
@@ -491,6 +555,15 @@ def cmd_top(args) -> int:
     return 0
 
 
+def _add_pass_flags(parser) -> None:
+    """--text-only / --photos-only, shared by `extract` and `extract-one`."""
+    which = parser.add_mutually_exclusive_group()
+    which.add_argument("--text-only", action="store_true",
+                       help="pass 1 only: the description")
+    which.add_argument("--photos-only", action="store_true",
+                       help="pass 2 only: the photos")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="karpm", description=__doc__)
     parser.add_argument("-c", "--config", default="config.toml",
@@ -521,12 +594,20 @@ def build_parser() -> argparse.ArgumentParser:
     p_extract = sub.add_parser(
         parents=[pace_parent], name="extract",
         help="read descriptions and photos with a model, without scoring")
-    which = p_extract.add_mutually_exclusive_group()
-    which.add_argument("--text-only", action="store_true",
-                       help="pass 1 only: the description")
-    which.add_argument("--photos-only", action="store_true",
-                       help="pass 2 only: the photos")
+    _add_pass_flags(p_extract)
     p_extract.set_defaults(func=cmd_extract)
+
+    p_extract_one = sub.add_parser(
+        parents=[pace_parent], name="extract-one",
+        help="read a single listing by id")
+    p_extract_one.add_argument("listing_id",
+                               help="Kleinanzeigen ad id, as stored in listings.id")
+    _add_pass_flags(p_extract_one)
+    p_extract_one.add_argument("--show-prompt", action="store_true",
+                               help="print the prompt and exit without calling the API")
+    p_extract_one.add_argument("--save", action="store_true",
+                               help="store what it finds; without this it is printed only")
+    p_extract_one.set_defaults(func=cmd_extract_one)
 
     sub.add_parser(parents=[pace_parent], name="score", help="score unscored listings and send instant alerts").set_defaults(
         func=cmd_score)

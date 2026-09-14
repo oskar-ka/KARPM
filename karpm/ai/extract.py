@@ -45,13 +45,8 @@ def run_pass(conn, kind: str, cfg, client: provider.Provider | None = None,
                         "of %s", kind, done, len(due))
             break
 
-        request = (passes.text_request(row, cfg) if kind == "text"
-                   else passes.photo_request(conn, row, cfg))
-        if request is None:
-            continue                    # nothing to look at after all
-
         try:
-            reply = engine.complete(request)
+            read = read_one(conn, kind, cfg, row, engine)
         except provider.ProviderError as exc:
             log.error("%s pass failed for %s: %s", kind, row["id"], exc)
             failed += 1
@@ -60,20 +55,50 @@ def run_pass(conn, kind: str, cfg, client: provider.Provider | None = None,
             log.error("%s pass failed for %s: %s", kind, row["id"], exc, exc_info=True)
             failed += 1
             continue
+        if read is None:
+            continue                    # nothing to look at after all
 
-        data = _tidy(kind, reply.data, conn, row, cfg)
-        db.save_extraction(
-            conn, row["id"], kind, data,
-            provider=engine.name, model=reply.model or cfg.model,
-            prompt_version=cfg.prompt_version,
-            source_hash=db._source_hash(conn, row, kind),
-            input_tokens=reply.input_tokens, output_tokens=reply.output_tokens,
-        )
+        data, reply = read
+        save(conn, kind, cfg, row, engine, data, reply)
         done += 1
         tokens += reply.tokens
         log.info("  %s %s (%s tokens)", kind, row["id"], reply.tokens)
 
     return {"kind": kind, "done": done, "failed": failed, "tokens": tokens}
+
+
+def build_request(conn, kind: str, cfg, row) -> provider.Request | None:
+    """What one pass would ask about one listing. None if there is nothing to ask.
+
+    Separate so `--show-prompt` renders the request that would really be sent
+    rather than an approximation of it, which is the only thing that flag is for.
+    """
+    return (passes.text_request(row, cfg) if kind == "text"
+            else passes.photo_request(conn, row, cfg))
+
+
+def read_one(conn, kind: str, cfg, row, engine) -> tuple[dict, provider.Reply] | None:
+    """One pass over one listing, tidied but not stored. None if nothing to look at.
+
+    A run and `extract-one` share this, so the single-listing command cannot
+    drift into asking something subtly different from what a run asks.
+    """
+    request = build_request(conn, kind, cfg, row)
+    if request is None:
+        return None
+    reply = engine.complete(request)
+    return _tidy(kind, reply.data, conn, row, cfg), reply
+
+
+def save(conn, kind: str, cfg, row, engine, data: dict, reply: provider.Reply) -> None:
+    """Store what a pass found, with the key that decides when it is read again."""
+    db.save_extraction(
+        conn, row["id"], kind, data,
+        provider=engine.name, model=reply.model or cfg.model,
+        prompt_version=cfg.prompt_version,
+        source_hash=db._source_hash(conn, row, kind),
+        input_tokens=reply.input_tokens, output_tokens=reply.output_tokens,
+    )
 
 
 def _tidy(kind: str, data: dict, conn, row, cfg) -> dict:

@@ -140,15 +140,17 @@ karpm daemon          # run continuously on the configured schedule
 karpm web             # the web UI on http://127.0.0.1:8080
 ```
 
-Other commands: `trial`, `scrape`, `extract`, `score`, `images`, `stats`, `top`, `score-one`,
-`probe`, `raw`.
+Other commands: `trial`, `scrape`, `extract`, `score`, `images`, `stats`, `top`,
+`extract-one`, `score-one`, `probe`, `raw`.
 
 If a run stalls or comes back empty, `karpm raw "<url>"` makes one request with
 no retries or backoff and prints exactly what the server returned — status,
 redirects, size, and whether the body looks like a block page.
 
 `karpm score-one <id> --show-prompt` prints the exact prompt for a listing
-without calling the API — the fastest way to tune `preferences.md`.
+without calling the API — the fastest way to tune `preferences.md`, and
+`karpm extract-one <id>` does the same for one listing's two reading passes,
+storing nothing unless you add `--save`.
 
 On the Pi, install `deploy/karpm.service` and `deploy/karpm-web.service` (edit
 the paths in both), then:
