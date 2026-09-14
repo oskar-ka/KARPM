@@ -1,8 +1,9 @@
-"""preferences.md as five boxes: splitting it, compiling it, and losing nothing.
+"""preferences.md as five boxes: splitting it and compiling it back.
 
 The file is still one markdown document that goes to pass 3 whole. Only the way
-it is edited changed - so the only thing that really has to hold is that a file
-survives the round trip, including one this code never wrote.
+it is edited changed - so what has to hold is that a file this page wrote
+survives the round trip unchanged, and that a save which changes nothing writes
+nothing.
 """
 
 import pytest
@@ -26,8 +27,7 @@ def test_the_boxes_compile_into_headings():
 
 
 def test_what_we_write_we_can_read_back():
-    written = pr.compile(FILLED)
-    assert {k: v for k, v in pr.split(written).items() if k != pr.REST} == FILLED
+    assert pr.split(pr.compile(FILLED)) == FILLED
 
 
 def test_compiling_is_stable():
@@ -44,22 +44,18 @@ def test_an_empty_box_keeps_its_heading():
     assert "## What is not important" in written
 
 
-def test_a_file_written_by_hand_is_kept_whole():
-    """It is a file people wrote in long before it had boxes."""
-    original = "I want a cheap GS.\n\n## My own heading\n\nkeep this\n"
-    values = pr.split(original)
-    assert values["about"] == "" and "I want a cheap GS." in values[pr.REST]
-    assert "## My own heading" in values[pr.REST] and "keep this" in values[pr.REST]
-
-    written = pr.compile(values)
-    for line in ("I want a cheap GS.", "## My own heading", "keep this"):
-        assert line in written
-
-
 def test_a_heading_we_know_is_picked_up_from_a_hand_written_file():
-    values = pr.split("## Logistics\n\n- 300 km\n\n## Nonsense\n\nkeep\n")
+    values = pr.split("## Logistics\n\n- 300 km\n\n## Nonsense\n\nsomething\n")
     assert values["logistics"] == "- 300 km"
-    assert "keep" in values[pr.REST]
+
+
+def test_only_the_five_headings_survive_a_save():
+    """The boxes are the file. Anything else it held is not shown and is not
+    written back - the .bak beside the file is what that leans on."""
+    values = pr.split("Loose prose.\n\n## Logistics\n\n- 300 km\n\n## Mine\n\ngone\n")
+    written = pr.compile(values)
+    assert "- 300 km" in written
+    assert "Loose prose." not in written and "## Mine" not in written
 
 
 def test_the_same_heading_twice_keeps_both():

@@ -29,7 +29,9 @@
     <p class="sub">The five parts below become one markdown file, which goes to the
       scoring pass with every listing. Be concrete, and say what you do not care
       about as well as what you do - it stops a listing being marked down for
-      something you would never notice.</p>
+      something you would never notice. These boxes are the whole file: saving
+      rewrites it, and the version before the save is kept as
+      <code>{{ prefs_path.name }}.bak</code>.</p>
 
     {% for part in parts %}
       <div class="field stacked">
@@ -42,22 +44,6 @@
         <p class="note">{{ part.help }}</p>
       </div>
     {% endfor %}
-
-    {% if values.rest %}
-      <div class="field stacked">
-        <label for="pref_rest">the rest of the file</label>
-        <div class="control">
-          <textarea id="pref_rest" name="pref_rest" rows="8"
-                    spellcheck="false">{{ values.rest }}</textarea>
-        </div>
-        <p class="note">What was already in the file and is not one of the five
-          headings above - written by hand, or written before this page existed.
-          It is kept and still goes to the model; move it into a box above when
-          you get round to it.</p>
-      </div>
-    {% else %}
-      <input type="hidden" name="pref_rest" value="">
-    {% endif %}
   </section>
 
   <div class="actions">

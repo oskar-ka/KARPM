@@ -294,8 +294,7 @@ def create_app(config_path: str = "config.toml") -> Flask:
         before = prefs_path.read_text(encoding="utf-8") if prefs_path.exists() else ""
         after = preferences_file.compile({
             part.key: request.form.get(f"pref_{part.key}", "")
-            for part in preferences_file.PARTS
-        } | {preferences_file.REST: request.form.get("pref_rest", "")})
+            for part in preferences_file.PARTS})
         if after != before:
             prefs_path.parent.mkdir(parents=True, exist_ok=True)
             _backup(prefs_path)

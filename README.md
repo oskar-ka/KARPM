@@ -174,7 +174,8 @@ The **prompts** page holds everything the three passes are told: a box each for
 what passes 1 and 2 are instructed to do, and — for pass 3 — five boxes (*About
 the bike*, *What it needs*, *What I would like*, *What is not important*,
 *Logistics*) compiled into `preferences.md`. Five narrow questions get better
-answers out of a person than one blank page. Editing a prompt re-reads every
+answers out of a person than one blank page; the five boxes are the whole file,
+and a save rewrites it (keeping the previous version as a `.bak`). Editing a prompt re-reads every
 listing, since the prompt's text is part of what decides whether stored findings
 still match what was asked for.
 

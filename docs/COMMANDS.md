@@ -650,10 +650,11 @@ rather than one: **About the bike**, **What it needs**, **What I would like**,
 that whole file goes to the scoring pass with every listing. An empty box keeps
 its heading: "I do not care about this" is itself worth telling the model.
 
-A `preferences.md` written by hand, or written before this page existed, does not
-fit those five headings. Nothing is thrown away: whatever is not under a heading
-we know appears in a sixth box, **the rest of the file**, still goes to the
-model, and can be moved into the boxes above whenever you feel like it.
+**The five boxes are the whole file.** A save rewrites it from them, so anything
+under a heading KARPM does not know — a file written by hand, or written before
+this page existed — is not shown on the page and is not written back. The
+version before the save is kept as `preferences.md.bak`, as for every file the
+UI writes.
 
 ### Editing the settings
 

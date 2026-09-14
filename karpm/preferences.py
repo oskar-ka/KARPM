@@ -5,18 +5,16 @@ goes to pass 3 whole. What changed is how it is edited: "tell the model what you
 want" is a hard thing to answer into an empty textarea, and five narrower
 questions get better answers out of a person than one broad one.
 
-Splitting and compiling are inverses for any file this wrote. For a file written
-by hand they are not, and cannot be - so anything that does not sit under one of
-our headings is kept verbatim rather than quietly dropped.
+The five boxes are the file: what the page shows is all of it, and a save
+rewrites it whole. Anything under a heading we do not know - a file written by
+hand, or written before this page existed - is not shown and does not survive
+the next save. The backup written beside the file is what that leans on.
 """
 
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-
-REST = "rest"                           # where anything we did not write goes
-
 
 @dataclass(frozen=True)
 class Part:
@@ -58,33 +56,24 @@ _HEADING = re.compile(r"^##\s+(.+?)\s*$", re.MULTILINE)
 
 
 def split(text: str | None) -> dict:
-    """One markdown file into a value per box, plus whatever else it held.
+    """One markdown file into a value per box.
 
-    A file that predates the split - or one someone wrote their own way - has no
-    headings we know, so all of it lands in `rest` and none of it is lost.
+    Only the five headings are read. Anything else the file held is not shown,
+    and a save will not write it back.
     """
     values = {part.key: "" for part in PARTS}
-    values[REST] = ""
     if not text or not text.strip():
         return values
 
     marks = list(_HEADING.finditer(text))
-    leading = text[: marks[0].start()] if marks else text
-    rest = [leading.strip()]
-
     for index, mark in enumerate(marks):
-        end = marks[index + 1].start() if index + 1 < len(marks) else len(text)
-        body = text[mark.end():end].strip()
         key = HEADINGS.get(mark.group(1).strip().lower())
         if key is None:
-            rest.append(f"## {mark.group(1).strip()}\n\n{body}".strip())
-        elif values[key]:
-            # The same heading twice: keep both rather than pick one.
-            values[key] = f"{values[key]}\n\n{body}".strip()
-        else:
-            values[key] = body
-
-    values[REST] = "\n\n".join(piece for piece in rest if piece)
+            continue
+        end = marks[index + 1].start() if index + 1 < len(marks) else len(text)
+        body = text[mark.end():end].strip()
+        # The same heading twice: keep both rather than pick one.
+        values[key] = f"{values[key]}\n\n{body}".strip() if values[key] else body
     return values
 
 
@@ -99,7 +88,4 @@ def compile(values: dict) -> str:
     for part in PARTS:
         body = (values.get(part.key) or "").strip()
         out.append(f"## {part.heading}\n\n{body}".rstrip())
-    rest = (values.get(REST) or "").strip()
-    if rest:
-        out.append(rest)
     return "\n\n".join(out) + "\n"

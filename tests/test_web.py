@@ -236,7 +236,6 @@ def prompt_form(client, overrides=None):
     """The prompts page as it would submit itself, with a few boxes changed."""
     from karpm import preferences as pr
     data = {f"pref_{part.key}": "" for part in pr.PARTS}
-    data["pref_rest"] = ""
     page = client.get("/prompts").get_data(as_text=True)
     for kind in ("text", "photos"):
         found = re.search(rf'name="prompt_{kind}"[^>]*>(.*?)</textarea>', page, re.S)
@@ -1274,22 +1273,19 @@ def test_the_boxes_come_back_filled_in(client, app):
     assert "- Full history" in body
 
 
-def test_a_hand_written_preferences_file_is_not_thrown_away(client, app):
-    """It is a file people wrote in long before it had boxes. A page that loses
-    it on the first save would be worse than no page."""
+def test_the_five_boxes_are_the_whole_file(client, app):
+    """What the page shows is all of it. Content under a heading we do not know
+    is not shown and does not survive a save - the .bak is the safety net."""
     _, _, work = app
     (work / "preferences.md").write_text(
-        "I want a cheap GS.\n\n## My own heading\n\nkeep this\n", encoding="utf-8")
+        "I want a cheap GS.\n\n## My own heading\n\nold note\n", encoding="utf-8")
 
-    body = client.get("/prompts").get_data(as_text=True)
-    assert "I want a cheap GS." in body and "keep this" in body
+    client.post("/prompts", data=prompt_form(client, {"pref_about": "A GS."}))
 
-    client.post("/prompts", data=prompt_form(client, {
-        "pref_about": "A GS.",
-        "pref_rest": "I want a cheap GS.\n\n## My own heading\n\nkeep this",
-    }))
     after = (work / "preferences.md").read_text(encoding="utf-8")
-    assert "A GS." in after and "keep this" in after and "I want a cheap GS." in after
+    assert "A GS." in after and "old note" not in after
+    kept = (work / "preferences.md.bak").read_text(encoding="utf-8")
+    assert "old note" in kept
 
 
 def test_a_template_edit_does_not_need_a_restart(app, tmp_path):
