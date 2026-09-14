@@ -333,3 +333,21 @@ def test_the_database_still_works_after_a_reset(ready):
     db.sync_searches(conn, conf.searches)
     pipeline.run_scrape(conf, conn, FakeFetcher())
     assert conn.execute("SELECT COUNT(*) n FROM listings").fetchone()["n"] > 0
+
+
+def test_reset_reports_the_commands_it_drops(ready):
+    """A queued command is a click that is about to vanish. It goes - it would
+    run against an empty database otherwise - but it is not dropped quietly."""
+    _, conn = ready
+    db.queue_command(conn, "scrape")
+    db.queue_command(conn, "digest")
+
+    removed = db.reset_everything(conn, None)
+
+    assert removed["pending_commands"] == 2
+    assert db.recent_commands(conn, 5) == []
+
+
+def test_reset_of_an_idle_queue_reports_nothing_dropped(ready):
+    _, conn = ready
+    assert db.reset_everything(conn, None)["pending_commands"] == 0

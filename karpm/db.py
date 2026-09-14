@@ -218,7 +218,11 @@ def reset_everything(conn: sqlite3.Connection, images_dir: str | Path | None = N
     Returns what was removed, because a destructive action that reports nothing
     leaves you wondering whether it happened.
     """
-    counts = {}
+    # A command still waiting is a click of yours that is about to disappear.
+    # It gets cleared with everything else - it would run against an empty
+    # database otherwise - but it is reported rather than silently dropped.
+    counts = {"pending_commands": conn.execute(
+        "SELECT COUNT(*) n FROM commands WHERE status = 'pending'").fetchone()["n"]}
     for table in COLLECTED_TABLES:
         counts[table] = conn.execute(f"SELECT COUNT(*) n FROM {table}").fetchone()["n"]
         conn.execute(f"DELETE FROM {table}")

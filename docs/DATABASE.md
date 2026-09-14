@@ -200,6 +200,21 @@ restarting one never disturbs the other.
 **`commands`** is a queue. The UI inserts a row; the daemon claims the oldest
 pending one on its next poll, runs it, and writes back what happened.
 
+It lives here rather than in a file of its own because a queue between two
+processes needs things SQLite already does and a file does not. `claim_command`
+updates conditionally on the row still being pending and checks `rowcount`, so
+two claimers cannot take the same work; a plain file needs `flock` or an atomic
+rename to match that, and gets it subtly wrong when it does not. An insert is
+committed or it is not, where a half-written file after a power cut is a queue
+you cannot parse. A command interrupted by a crash is still marked `running` on
+the next start, which is what `reset_stale_commands` reads. And the dashboard
+lists the last few with their status and result, which is a query rather than
+something to hand-roll.
+
+SQLite is a file. The choice was never file versus database - it was this file,
+whose format already answers those questions, or a second one whose format I
+would be writing myself.
+
 | Column | Meaning |
 |---|---|
 | `command` | `scrape`, `digest` or `rescore` — the set is `db.COMMANDS`. |

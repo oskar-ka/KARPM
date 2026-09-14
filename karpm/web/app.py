@@ -179,10 +179,15 @@ def create_app(config_path: str = "config.toml") -> Flask:
                           "deleted. Try again when it has finished.", "error")
                 else:
                     removed = db.reset_everything(conn, conf().images.dir)
-                    flash("database cleared: "
-                          f"{removed['listings']} listing(s), {removed['scores']} score(s), "
-                          f"{removed['images_deleted']} photo(s). Your config and "
-                          "preferences are untouched.", "ok")
+                    message = ("database cleared: "
+                               f"{removed['listings']} listing(s), "
+                               f"{removed['scores']} score(s), "
+                               f"{removed['images_deleted']} photo(s). Your config "
+                               "and preferences are untouched.")
+                    if removed["pending_commands"]:
+                        message += (f" {removed['pending_commands']} queued command(s) "
+                                    "were dropped with it.")
+                    flash(message, "ok")
             elif action in ("pause", "resume"):
                 db.set_state(conn, "paused", "1" if action == "pause" else "0")
                 flash("schedule paused" if action == "pause" else "schedule resumed", "ok")
