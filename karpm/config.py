@@ -198,6 +198,11 @@ class ScheduleConfig:
     # two: the scrape still runs on its own schedule, and the API spending
     # happens only in these slots.
     score_at: list[str] = field(default_factory=list)
+    # How often the daemon says it is alive - both the line in the terminal and
+    # the timestamp the web UI watches. Longer is quieter; the UI waits three of
+    # these before calling the daemon dead, so it follows this rather than
+    # needing to be changed alongside it.
+    heartbeat_s: int = 120
 
 
 @dataclass

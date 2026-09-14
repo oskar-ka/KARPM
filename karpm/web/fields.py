@@ -169,6 +169,11 @@ SECTIONS = (
         "drive it from this page alone."), (
         Field("scrape_at", "lines", "", placeholder="07:30"),
         Field("digest_at", "lines", "", placeholder="08:00"),
+        Field("heartbeat_s", "int",
+              "Seconds between heartbeats - one line in the daemon's terminal "
+              "each time, and the timestamp this page watches. Longer is "
+              "quieter; this page waits three of them before calling the daemon "
+              "dead, so it follows whatever you set here."),
         Field("score_at", "lines",
               "Leave empty to score as part of each scrape - which is what you "
               "want when the point is to hear about a good listing quickly. "

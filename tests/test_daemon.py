@@ -465,31 +465,33 @@ def test_a_broken_config_mid_run_does_not_stop_scoring(ready, tmp_path):
 
 # --- saying it is alive ---------------------------------------------------
 
-def test_the_status_line_names_what_it_is_waiting_for(ready):
-    conf, conn = ready
-    when = {"scrape": datetime.now().replace(hour=19, minute=30),
-            "digest": None, "score": None}
-    line = daemon.status_line(conn, when, scoring_on=True)
-    assert line.startswith("alive - ")
+def test_the_heartbeat_names_what_it_is_waiting_for(ready):
+    _, conn = ready
+    db.set_state(conn, "next_scrape", datetime.now().replace(
+        hour=19, minute=30).isoformat())
+    db.set_state(conn, "next_digest", "not scheduled")
+
+    line = daemon.status_line(conn)
+
+    assert line.startswith("heartbeat - ")
     assert "next scrape 19:30" in line
     assert "digest never" in line
     assert "score with each scrape" in line
 
 
-def test_the_status_line_says_when_scoring_is_off(ready):
+def test_the_heartbeat_says_when_scoring_is_off(ready):
     _, conn = ready
-    line = daemon.status_line(conn, {"scrape": None, "digest": None, "score": None},
-                              scoring_on=False)
-    assert "scoring off" in line
+    db.set_state(conn, "scoring", "off")
+    assert "scoring off" in daemon.status_line(conn)
 
 
-def test_the_status_line_counts_the_backlog(ready):
+def test_the_heartbeat_counts_the_backlog(ready):
     conf, conn = ready
     pipeline.run_scrape(conf, conn, FakeFetcher())
     db.mark_for_refetch(conn, "2847612345")
     db.queue_command(conn, "digest")
 
-    line = daemon.status_line(conn, {"scrape": None, "digest": None, "score": None}, True)
+    line = daemon.status_line(conn)
 
     assert "1 to re-fetch" in line
     assert "queued command" in line
@@ -499,14 +501,13 @@ def test_a_paused_schedule_is_impossible_to_miss(ready):
     """The commonest reason for "why has it not scraped"."""
     _, conn = ready
     db.set_state(conn, "paused", "1")
-    line = daemon.status_line(conn, {"scrape": None, "digest": None, "score": None}, True)
-    assert "SCHEDULE PAUSED" in line
+    assert "SCHEDULE PAUSED" in daemon.status_line(conn)
 
 
 def test_an_idle_daemon_says_only_what_matters(ready):
     """Nothing queued, nothing paused: no trailing clutter."""
     _, conn = ready
-    line = daemon.status_line(conn, {"scrape": None, "digest": None, "score": None}, True)
+    line = daemon.status_line(conn)
     assert "queued" not in line and "re-fetch" not in line
 
 
@@ -517,19 +518,72 @@ def test_an_idle_daemon_says_only_what_matters(ready):
 ])
 def test_a_time_is_written_the_way_you_would_read_it(delta, expected):
     moment = datetime.now() + delta
-    shown = daemon._when(moment)
+    shown = daemon._when(moment.isoformat())
     assert (moment.strftime(expected) in shown) if "%" in expected else (expected in shown)
 
 
-def test_no_next_fire_reads_as_never():
-    assert daemon._when(None) == "never"
+@pytest.mark.parametrize("stored", [None, "not scheduled"])
+def test_nothing_scheduled_reads_as_never(stored):
+    assert daemon._when(stored) == "never"
 
 
-def test_the_status_line_appears_without_waiting(ready, monkeypatch, caplog):
-    """The first one comes immediately, so a fresh terminal is not silent."""
+def test_the_first_heartbeat_arrives_at_once(ready, caplog):
+    """A fresh terminal should not be silent while it waits for the interval."""
     conf, conn = ready
     conf.schedule.scrape_at = []
     conf.schedule.digest_at = []
+    conf.schedule.heartbeat_s = 3600        # far longer than this test runs
     with caplog.at_level("INFO"):
         _run_briefly(conf, conn, seconds=2.0)
-    assert "alive - " in caplog.text
+    assert "heartbeat - " in caplog.text
+
+
+def test_the_heartbeat_keeps_reporting_on_its_own(ready, caplog):
+    """The point of it being a thread: it proves liveness precisely when the
+    main loop is busy with a scrape and cannot say anything itself."""
+    conf, conn = ready
+    stop = threading.Event()
+    thread = threading.Thread(target=daemon._beat, args=(conf.db_path, stop, 1),
+                              daemon=True)
+    with caplog.at_level("INFO"):
+        thread.start()
+        time.sleep(2.5)
+        stop.set()
+        thread.join(timeout=5)
+
+    assert caplog.text.count("heartbeat - ") >= 2, "more than just the first one"
+    assert not thread.is_alive()
+
+
+# --- how often ------------------------------------------------------------
+
+def test_the_interval_comes_from_the_config(ready):
+    conf, _ = ready
+    conf.schedule.heartbeat_s = 45
+    assert daemon.heartbeat_seconds(conf) == 45
+
+
+@pytest.mark.parametrize("given, expected", [
+    (0, daemon.MIN_HEARTBEAT_S),
+    (1, daemon.MIN_HEARTBEAT_S),
+    (999999, daemon.MAX_HEARTBEAT_S),
+])
+def test_an_unusable_interval_is_held_to_something_workable(ready, given, expected):
+    """A heartbeat every second writes more than it works; one every day is not
+    a heartbeat."""
+    conf, _ = ready
+    conf.schedule.heartbeat_s = given
+    assert daemon.heartbeat_seconds(conf) == expected
+
+
+def test_the_first_heartbeat_already_knows_the_schedule(ready, caplog):
+    """Published before the beat thread starts - otherwise the first line of a
+    fresh start says "next scrape never" and sends you looking for a fault."""
+    conf, conn = ready
+    conf.schedule.scrape_at = ["07:30"]
+    conf.schedule.heartbeat_s = 3600
+    with caplog.at_level("INFO"):
+        _run_briefly(conf, conn, seconds=2.0)
+    first = [line for line in caplog.text.splitlines() if "heartbeat - " in line][0]
+    assert "next scrape 07:30" in first
+    assert "next scrape never" not in first

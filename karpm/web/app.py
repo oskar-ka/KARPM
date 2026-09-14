@@ -18,7 +18,16 @@ from ..config import Config, load_config
 
 log = logging.getLogger(__name__)
 
-HEARTBEAT_STALE_AFTER = timedelta(minutes=5)
+# How many missed beats before the daemon is called dead. Derived from
+# schedule.heartbeat_s rather than fixed, so lengthening the interval does not
+# make a healthy daemon look like a stopped one.
+MISSED_BEATS_ALLOWED = 3
+MINIMUM_STALE_AFTER = timedelta(seconds=90)
+
+
+def stale_after(conf) -> timedelta:
+    return max(MINIMUM_STALE_AFTER,
+               timedelta(seconds=conf.schedule.heartbeat_s * MISSED_BEATS_ALLOWED))
 
 
 def create_app(config_path: str = "config.toml") -> Flask:
@@ -176,7 +185,7 @@ def create_app(config_path: str = "config.toml") -> Flask:
                 busy = conn.execute(
                     "SELECT command FROM commands WHERE status = 'running' "
                     "LIMIT 1").fetchone()
-                if busy and not _daemon_alive(conn):
+                if busy and not _daemon_alive(conn, conf()):
                     stale = db.reset_stale_commands(conn)
                     log.info("cleared %s command(s) left running by a daemon that "
                              "is no longer alive", stale)
@@ -666,7 +675,7 @@ LIST_COLUMNS = [
 SORTABLE = {name for name, _ in LIST_COLUMNS}
 
 
-def _daemon_alive(conn) -> bool:
+def _daemon_alive(conn, conf) -> bool:
     """Has the daemon checked in recently enough to still be working?"""
     heartbeat = db.get_state(conn, "heartbeat")
     if not heartbeat:
@@ -677,12 +686,12 @@ def _daemon_alive(conn) -> bool:
         return False
     if last.tzinfo is None:
         last = last.replace(tzinfo=timezone.utc)
-    return datetime.now(timezone.utc) - last < HEARTBEAT_STALE_AFTER
+    return datetime.now(timezone.utc) - last < stale_after(conf)
 
 
 def _status(conn, conf) -> dict:
     heartbeat = db.get_state(conn, "heartbeat")
-    alive = _daemon_alive(conn)
+    alive = _daemon_alive(conn, conf)
     counts = conn.execute(
         "SELECT COUNT(*) total, SUM(is_active) active, "
         "SUM(CASE WHEN overall IS NULL THEN 1 ELSE 0 END) unscored "

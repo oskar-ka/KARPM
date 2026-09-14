@@ -137,6 +137,12 @@ digest_at = ["08:00"]
 # happens only in these slots.
 score_at = []
 
+# Seconds between heartbeats. The daemon writes one and logs one line each time,
+# so this is both "is it alive" and how chatty its terminal is. The web UI waits
+# three of them before calling the daemon dead, so it follows this rather than
+# needing to be changed to match.
+heartbeat_s = 120
+
 [web]
 # `karpm web` serves the status page, the listings browser and these settings.
 # It binds to localhost, so only this machine can reach it. From another device,
