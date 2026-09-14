@@ -10,9 +10,9 @@ Built to run unattended on a Raspberry Pi.
 searches (URLs you paste)
         │
         ▼
-   scrape  ──►  SQLite  ──►  score with Claude  ──►  email
-   twice/day    + images      structured 1-5         instant alerts
-                + history     verdict per listing    + daily digest
+   scrape  ──►  SQLite  ──►  read it  ──►  score  ──►  email
+   twice/day    + images     pass 1: text  pass 3:     instant alerts
+                + history    pass 2: photos  1-5       + daily digest
 ```
 
 ## What it collects
@@ -134,13 +134,13 @@ buy, and they would skew the price comparables that the scoring prompt uses.
 
 ```bash
 karpm trial --url ... # dry run: scrape and parse only, no scoring or email
-karpm run             # scrape, then score and send any instant alerts
+karpm run             # scrape, read, score, and send any instant alerts
 karpm digest          # send the digest (--dry-run to see what would go out)
 karpm daemon          # run continuously on the configured schedule
 karpm web             # the web UI on http://127.0.0.1:8080
 ```
 
-Other commands: `trial`, `scrape`, `score`, `images`, `stats`, `top`, `score-one`,
+Other commands: `trial`, `scrape`, `extract`, `score`, `images`, `stats`, `top`, `score-one`,
 `probe`, `raw`.
 
 If a run stalls or comes back empty, `karpm raw "<url>"` makes one request with
@@ -165,7 +165,12 @@ journalctl -u karpm -f
 table of every listing, a page per listing with its photos, price history and
 scores, and forms for the searches, `preferences.md` and every setting in
 `config.toml` — a field each, with a note on what it does. Buttons queue a
-scrape, a digest or a re-score, and pause the schedule.
+scrape, a digest, a reading or a re-score, and pause the schedule.
+
+A listing's page shows what passes 1 and 2 found in panels of their own, naming
+the model that said it, and outlines the photos pass 2 shortlisted. The findings
+are kept apart from the parsed fields on purpose: mixed in with the mileage read
+off the ad, a model's reading would be indistinguishable from something checked.
 
 Settings are edited on the line they already occupy in `config.toml`, so the
 comments you have written there survive a save, and a value that would stop
@@ -202,21 +207,41 @@ Two shapes, both via Resend:
 
 Thresholds live under `[email]` in `config.toml`.
 
-## Scoring
+## Three passes
 
-Each listing gets a structured verdict from Claude: `overall`, `fit` (against
-your preferences) and `value` (for money), all 1–5, plus an estimated fair
-price, a headline, reasoning, pros, cons and red flags. Everything is stored, so
-scores stay comparable and sortable across months.
+A listing is looked at by three model calls, each configurable separately — its
+own model, its own provider, its own switch.
 
-The prompt includes price percentiles for the same model **from your own
+**Pass 1** (`[extract_text]`) reads the German description and writes down what
+the seller claims: work done, faults admitted, what is included, what an ad this
+detailed is conspicuously not saying. **Pass 2** (`[extract_photos]`) looks at
+the photos, reports what is visible, and shortlists the few worth a second look
+— a gallery of twenty is rarely twenty pieces of evidence, and the expensive
+model should not spend its attention on the near-duplicates. Both are reading
+jobs a cheap model does well, and neither ever writes into a listing's own
+fields: what they find is stored beside it and reaches pass 3 marked as claims.
+
+**Pass 3** (`[scoring]`) is the one that decides, and gets the better model. It
+gets a structured verdict out of Claude: `overall`, `fit` (against your
+preferences) and `value` (for money), all 1–5, plus an estimated fair price, a
+headline, reasoning, pros, cons and red flags. Everything is stored, so scores
+stay comparable and sortable across months.
+
+Its prompt includes price percentiles for the same model **from your own
 database**, so "good value" is measured against what you are actually seeing
-rather than the model's recollection of the market. Photos are sent too
-(`scoring.max_images`, default 2) because rust, crash damage and worn tyres are
-visible and not mentioned in the text.
+rather than the model's recollection of the market. The shortlisted photos go
+with it (`scoring.max_images`, default 2) because rust, crash damage and worn
+tyres are visible and not mentioned in the text.
 
-Listings are re-scored when their price or text changes, or when you bump
-`prompt_version` after editing your preferences.
+The three go stale for different reasons, so they re-run independently: an
+edited description sends a listing back through pass 1, a changed gallery
+through pass 2, and either of those — or a bumped `prompt_version` after you
+rewrite your preferences — through pass 3.
+
+Only `anthropic` is implemented as a provider. It is a per-pass setting so that
+a cheaper model can be put behind pass 1 or 2 later without touching anything
+else; pass 1 is text-only by construction, so a provider with no vision can
+serve it.
 
 ## Rate limiting
 

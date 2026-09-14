@@ -82,6 +82,8 @@ def run_command(conf, conn, row, config_path=None) -> tuple[bool, str]:
     if command == "digest":
         provider_id = pipeline.run_digest(conf, conn)
         return True, f"sent: {provider_id}" if provider_id else "nothing new to send"
+    if command == "extract":
+        return True, json.dumps(pipeline.run_extraction(conf, conn, config_path))
     if command == "rescore":
         # Checked before anything is deleted. Wiping the verdicts and then
         # finding scoring switched off would destroy what cannot be rebuilt.

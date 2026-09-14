@@ -120,6 +120,7 @@ def create_app(config_path: str = "config.toml") -> Flask:
                 scores=scores, specifications=_specifications(row),
                 figures=_derived_rows(
                     derived.summarise(conn, row, conf().home_plz), conf().home_plz),
+                found=_findings(conn, listing_id),
                 misc=_miscellaneous(row))
         finally:
             conn.close()
@@ -608,6 +609,79 @@ def _derived_rows(worked_out: dict, home_plz: str | None) -> list:
     ]
 
 
+
+# --- what the two reading passes found --------------------------------------
+#
+# Shown apart from the parsed fields and labelled as a reading rather than a
+# fact. A model's summary of what a seller claims is useful; mixed in with the
+# mileage off the page it would be indistinguishable from something checked.
+
+TEXT_LISTS = (
+    ("faults the seller admits", "known_faults"),
+    ("red flags", "red_flags"),
+    ("recently done", "recent_work"),
+    ("modifications", "modifications"),
+    ("included", "included_extras"),
+    ("worth asking about", "questions_to_ask"),
+)
+
+PHOTO_LISTS = (
+    ("visible issues", "visible_issues"),
+    ("signs of care", "positives"),
+    ("not shown", "coverage_gaps"),
+)
+
+
+def _service_line(item) -> str:
+    """One entry of recent_work, which is the only structured list of the six."""
+    if not isinstance(item, dict):
+        return str(item)
+    what = item.get("what") or ""
+    when = item.get("when")
+    quote = item.get("quote")
+    line = f"{what} ({when})" if when else what
+    return f"{line} - \u201c{quote}\u201d" if quote else line
+
+
+def _finding_lists(data: dict, spec) -> list:
+    out = []
+    for label, key in spec:
+        items = data.get(key) or []
+        if not items:
+            continue
+        out.append((label, [_service_line(item) if key == "recent_work" else str(item)
+                            for item in items]))
+    return out
+
+
+def _findings(conn, listing_id: str) -> dict:
+    """Both passes' findings, ready to render, plus what pass 2 said per photo.
+
+    Empty keys throughout when a pass has not run: nothing here is a reason for
+    the page to look broken.
+    """
+    found = db.extractions_for(conn, listing_id)
+    text = (found.get("text") or {}).get("data") or {}
+    photos = (found.get("photos") or {}).get("data") or {}
+    notes = {}
+    for note in photos.get("photo_notes") or []:
+        if isinstance(note, dict) and note.get("position") is not None:
+            notes[note["position"]] = note
+    return {
+        "text": found.get("text"),
+        "photos": found.get("photos"),
+        "text_summary": text.get("summary"),
+        "text_lists": _finding_lists(text, TEXT_LISTS),
+        "negotiable": text.get("negotiable"),
+        "selling_reason": text.get("selling_reason"),
+        "photo_summary": photos.get("condition_summary"),
+        "photo_lists": _finding_lists(photos, PHOTO_LISTS),
+        "photo_quality": photos.get("photo_quality"),
+        "photo_notes": notes,
+        "shortlist": list(photos.get("shortlist") or []),
+    }
+
+
 def _miscellaneous(row) -> tuple[list, list]:
     """The rest of the typed fields, and whatever the page said that we could
     not use - either because the label is unknown or the value would not parse.
@@ -712,9 +786,27 @@ def _status(conn, conf) -> dict:
         "runs": conn.execute("SELECT * FROM runs ORDER BY id DESC LIMIT 8").fetchall(),
         "commands": db.recent_commands(conn, 8),
         "pending": db.pending_counts(conn),
+        "unread": _unread_counts(conn, conf),
         "searches": conn.execute("SELECT * FROM searches ORDER BY name").fetchall(),
         "conf": conf,
     }
+
+
+def _unread_counts(conn, conf) -> dict:
+    """How many listings each reading pass still owes a look at.
+
+    A pass quietly doing nothing - switched off, or its queue never draining -
+    would otherwise be indistinguishable from one that had read everything.
+    """
+    passes = {"description": conf.extract_text, "photos": conf.extract_photos}
+    out = {}
+    for label, cfg in passes.items():
+        if not cfg.enabled:
+            out[label] = None       # off, which is different from nothing to do
+            continue
+        kind = "text" if label == "description" else "photos"
+        out[label] = db.extraction_backlog(conn, kind, cfg.prompt_version)
+    return out
 
 
 def _filters_from(args) -> dict:

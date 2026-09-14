@@ -747,7 +747,7 @@ def finish_run(conn: sqlite3.Connection, run_id: int, ok: bool, **counts) -> Non
 
 # --- daemon control ---------------------------------------------------------
 
-COMMANDS = ("scrape", "digest", "rescore")
+COMMANDS = ("scrape", "digest", "extract", "rescore")
 
 
 def queue_command(conn: sqlite3.Connection, command: str, params: dict | None = None) -> int:

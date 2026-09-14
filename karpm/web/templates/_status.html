@@ -15,6 +15,13 @@
     <dt>next score</dt><dd>{{ next_score or 'with each scrape' }}</dd>
     <dt>listings</dt><dd>{{ counts.total or 0 }} ({{ counts.active or 0 }} active,
       {{ counts.unscored or 0 }} unscored)</dd>
+    <dt>to read</dt><dd>
+      {% for label, count in unread.items() %}
+        {% if count is none %}<span class="muted">{{ label }} pass off</span>
+        {% elif count %}{{ count }} {{ label }}
+        {% else %}<span class="muted">{{ label }} done</span>{% endif %}
+        {%- if not loop.last %} · {% endif %}
+      {% endfor %}</dd>
     {% if pending.refetch or pending.rescore or pending.ignored %}
       <dt>queued</dt><dd>
         {% if pending.refetch %}<a href="{{ url_for('listings', state='needs_refetch') }}">{{

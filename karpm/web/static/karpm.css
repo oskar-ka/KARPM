@@ -76,8 +76,21 @@ form.inline { display: inline; }
 .tag.warn { color: var(--warn); border-color: var(--warn); }
 .bad-text { color: var(--bad); }
 
-.gallery { display: flex; flex-wrap: wrap; gap: 6px; }
-.gallery img { width: 150px; height: 110px; object-fit: cover; border-radius: 4px; }
+.gallery { display: flex; flex-wrap: wrap; gap: 10px; }
+.gallery figure { margin: 0; width: 150px; }
+.gallery img { width: 150px; height: 110px; object-fit: cover; border-radius: 4px;
+               display: block; }
+/* The photos pass 2 chose, and therefore the ones pass 3 was shown. */
+.gallery figure.shortlisted img { outline: 2px solid var(--accent, #0b7a3b);
+                                  outline-offset: 1px; }
+.gallery figcaption { font-size: 11.5px; color: var(--muted); margin-top: 4px;
+                      line-height: 1.35; }
+.gallery figcaption .warn-text { display: block; }
+
+/* What a reading pass found. Deliberately plainer than the parsed fields: it
+   is a model's reading of the ad, not something checked. */
+.findings { margin: 4px 0 10px; padding-left: 18px; }
+.findings li { margin: 2px 0; }
 .description { white-space: pre-wrap; font: inherit; margin: 0; max-width: 80ch; }
 .headline { font-weight: 600; }
 .pros_json { color: #0b7a3b; } .cons_json { color: var(--warn); }

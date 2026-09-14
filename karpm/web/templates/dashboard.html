@@ -10,6 +10,8 @@
     <button>scrape now</button></form>
   <form method="post" action="{{ url_for('control', action='digest') }}" class="inline">
     <button>send digest</button></form>
+  <form method="post" action="{{ url_for('control', action='extract') }}" class="inline">
+    <button>read new listings</button></form>
   <form method="post" action="{{ url_for('control', action='rescore') }}" class="inline">
     <button>score new listings</button></form>
   <form method="post" action="{{ url_for('control', action='rescore') }}" class="inline"
@@ -23,6 +25,9 @@
     <form method="post" action="{{ url_for('control', action='pause') }}" class="inline">
       <button>pause schedule</button></form>
   {% endif %}
+  <p class="note">Reading is passes 1 and 2 - the description and the photos -
+    and scoring is pass 3, which weighs what they found. All three cost
+    credits; the scrape itself costs none.</p>
 </div>
 
 <div class="panel">

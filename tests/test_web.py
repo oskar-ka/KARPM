@@ -158,7 +158,7 @@ def test_a_photo_we_never_downloaded_is_a_404(client):
 
 # --- daemon control ------------------------------------------------------
 
-@pytest.mark.parametrize("action", ["scrape", "digest", "rescore"])
+@pytest.mark.parametrize("action", ["scrape", "digest", "extract", "rescore"])
 def test_control_queues_a_command(client, app, action):
     _, config_path, _ = app
     assert client.post(f"/control/{action}").status_code == 302
@@ -1033,3 +1033,90 @@ def test_heartbeat_is_the_first_field_in_the_schedule_panel(client):
     body = client.get("/config").get_data(as_text=True)
     panel = body[body.index("<h2>schedule</h2>"):]
     assert panel.index("schedule__heartbeat_s") < panel.index("schedule__scrape_at")
+
+
+# --- what the reading passes found ---------------------------------------
+
+def _store_findings(conf_path, listing_id="2847612345"):
+    """As a real pass would leave it: the findings, and the keys they were made
+    from. A fabricated key reads as stale, which is its own kind of correct."""
+    conn = opened(conf_path)
+    row = db.get_listing(conn, listing_id)
+    db.save_extraction(
+        conn, listing_id, "text",
+        {"summary": "A tidy MT-07 with a fresh service.",
+         "known_faults": ["scratched left mirror"],
+         "recent_work": [{"what": "chain and sprockets", "when": "40000 km",
+                          "quote": "Kette und Ritzel bei 40tkm neu"}],
+         "selling_reason": "buying a bigger bike", "negotiable": True},
+        provider="anthropic", model="claude-haiku-4-5", prompt_version="v1",
+        source_hash=row["content_hash"])
+    db.save_extraction(
+        conn, listing_id, "photos",
+        {"condition_summary": "Clean, photographed in a garage.",
+         "visible_issues": ["surface rust on the downpipe"],
+         "photo_notes": [{"position": 0, "shows": "left side",
+                          "concern": "scuffed bar end"}],
+         "shortlist": [0]},
+        provider="anthropic", model="claude-haiku-4-5", prompt_version="v1",
+        source_hash=db.image_set_hash(conn, listing_id))
+    conn.commit()
+    conn.close()
+
+
+def test_a_listing_page_shows_what_the_passes_found(client, app):
+    _, config_path, _ = app
+    _store_findings(config_path)
+    body = client.get("/listing/2847612345").get_data(as_text=True)
+
+    assert "A tidy MT-07 with a fresh service." in body
+    assert "scratched left mirror" in body
+    assert "Kette und Ritzel bei 40tkm neu" in body      # the quote to check it against
+    assert "surface rust on the downpipe" in body
+    # Which model said it and when: a finding with no provenance is a rumour.
+    assert "claude-haiku-4-5" in body
+
+
+def test_findings_are_not_dressed_up_as_facts(client, app):
+    """They are one model's reading of what a seller wrote. The page has to say
+    so, or they are indistinguishable from the mileage off the ad."""
+    _, config_path, _ = app
+    _store_findings(config_path)
+    body = client.get("/listing/2847612345").get_data(as_text=True)
+    assert "Claims, not checked facts." in body
+
+
+def test_the_shortlisted_photos_are_marked_in_the_gallery(client, app):
+    _, config_path, _ = app
+    _store_findings(config_path)
+    body = client.get("/listing/2847612345").get_data(as_text=True)
+    assert "shortlisted" in body
+    assert "scuffed bar end" in body        # the per-photo note, beside its photo
+
+
+def test_a_listing_nothing_has_read_yet_renders_without_the_panels(client):
+    """Every listing predates these passes, and most will be waiting for them."""
+    body = client.get("/listing/2847612345").get_data(as_text=True)
+    assert body.count("read from the description") == 0
+    assert "specifications" in body
+
+
+def test_the_dashboard_says_how_much_is_still_unread(client, app):
+    """A pass that has quietly stopped and one that has read everything look
+    the same from the outside unless the page says which."""
+    _, config_path, _ = app
+    body = client.get("/").get_data(as_text=True)
+    assert "2 description" in body and "2 photos" in body
+
+    _store_findings(config_path)                     # one of the two, read
+    after = client.get("/status-fragment").get_data(as_text=True)
+    assert "1 description" in after and "1 photos" in after
+
+
+def test_a_pass_switched_off_says_so_rather_than_reading_as_done(client, app):
+    _, config_path, _ = app
+    config_path.write_text(
+        config_path.read_text(encoding="utf-8") + "\n[extract_photos]\nenabled = false\n",
+        encoding="utf-8")
+    body = client.get("/status-fragment").get_data(as_text=True)
+    assert "photos pass off" in body

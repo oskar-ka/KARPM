@@ -63,22 +63,75 @@
   </div>
 </div>
 
-{# 2. The photos. #}
+{# 2. The photos, with whatever pass 2 said about each of them. #}
 {% if images %}
 <div class="panel">
   <h2>{{ images | length }} photo(s)</h2>
   <div class="gallery">
     {% for image in images %}
       {% if image.local_path %}
-        <a href="{{ url_for('photo', listing_id=row.id, position=image.position) }}">
-          <img loading="lazy" src="{{ url_for('photo', listing_id=row.id, position=image.position) }}" alt=""></a>
+        {% set note = found.photo_notes.get(image.position) %}
+        <figure class="{{ 'shortlisted' if image.position in found.shortlist }}">
+          <a href="{{ url_for('photo', listing_id=row.id, position=image.position) }}">
+            <img loading="lazy" src="{{ url_for('photo', listing_id=row.id, position=image.position) }}" alt=""></a>
+          {% if note or image.position in found.shortlist %}
+            <figcaption>
+              {% if image.position in found.shortlist %}<span class="tag">shortlisted</span>{% endif %}
+              {% if note %}{{ note.shows }}
+                {% if note.concern %}<span class="warn-text">{{ note.concern }}</span>{% endif %}
+              {% endif %}
+            </figcaption>
+          {% endif %}
+        </figure>
       {% endif %}
     {% endfor %}
   </div>
+  {% if found.shortlist %}
+    <p class="note">Shortlisted photos are the ones pass 2 judged most
+      informative; they are what the scoring pass is shown.</p>
+  {% endif %}
 </div>
 {% endif %}
 
-{# 3. Nothing here was read off the page: it is worked out from what was. #}
+{# 3. What the two reading passes made of the ad. Kept apart from the parsed
+      fields: this is a model's reading of what the seller said and showed, and
+      it has not been checked against anything. #}
+{% if found.text or found.photos %}
+<div class="cols">
+  {% if found.text %}
+    <div class="panel">
+      <h2>read from the description</h2>
+      {% if found.text_summary %}<p>{{ found.text_summary }}</p>{% endif %}
+      {% if found.selling_reason %}
+        <p class="muted">Selling because: {{ found.selling_reason }}
+          {% if found.negotiable %}· open to an offer{% endif %}</p>
+      {% endif %}
+      {% for label, items in found.text_lists %}
+        <h3>{{ label }}</h3>
+        <ul class="findings">{% for item in items %}<li>{{ item }}</li>{% endfor %}</ul>
+      {% endfor %}
+      <p class="note">{{ found.text.model }} read the ad's own words on
+        {{ found.text.created_at[:16] }}. Claims, not checked facts.</p>
+    </div>
+  {% endif %}
+
+  {% if found.photos %}
+    <div class="panel">
+      <h2>read from the photos</h2>
+      {% if found.photo_summary %}<p>{{ found.photo_summary }}</p>{% endif %}
+      {% for label, items in found.photo_lists %}
+        <h3>{{ label }}</h3>
+        <ul class="findings">{% for item in items %}<li>{{ item }}</li>{% endfor %}</ul>
+      {% endfor %}
+      {% if found.photo_quality %}<p class="muted">{{ found.photo_quality }}</p>{% endif %}
+      <p class="note">{{ found.photos.model }} looked at the gallery on
+        {{ found.photos.created_at[:16] }}. What it thinks it can see.</p>
+    </div>
+  {% endif %}
+</div>
+{% endif %}
+
+{# 4. Nothing here was read off the page: it is worked out from what was. #}
 <div class="panel">
   <h2>derived figures</h2>
   <dl class="kv derived">
@@ -95,7 +148,7 @@
   <pre class="description">{{ row.description }}</pre>
 </div>
 
-{# 4. The rest of the typed fields, then whatever the page said that we could
+{# 5. The rest of the typed fields, then whatever the page said that we could
       not use - which is how a new Kleinanzeigen attribute gets noticed. #}
 <div class="cols">
   <div class="panel">

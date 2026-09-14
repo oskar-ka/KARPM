@@ -68,6 +68,7 @@ from a `.env` file in the working directory: `ANTHROPIC_API_KEY` for scoring and
 | [`probe`](#probe) | optional | no | no |
 | [`scrape`](#scrape) | yes | no | no |
 | [`images`](#images) | yes | no | no |
+| [`extract`](#extract) | yes (API) | **yes** | no |
 | [`score`](#score) | yes (API) | **yes** | **yes** (instant alerts) |
 | [`score-one`](#score-one) | yes (API) | **yes** | no |
 | [`run`](#run) | yes | **yes** | **yes** |
@@ -255,10 +256,82 @@ karpm images --limit 200
 
 ---
 
+## The three passes
+
+Three separate model calls look at a listing, in this order. Each has its own
+section in `config.toml`, its own model, its own `provider`, its own
+`prompt_version` and its own `enabled`.
+
+| Pass | Section | What it does | Goes stale when |
+|---|---|---|---|
+| 1 | `[extract_text]` | Reads the description and writes down what the seller claims: work done, faults admitted, what is included, what to ask about. | The ad's text or price changes. |
+| 2 | `[extract_photos]` | Looks at the photos, says what they show, and shortlists the few worth a second look. | A photo is added, removed or replaced. |
+| 3 | `[scoring]` | Weighs the hard facts, what passes 1 and 2 found, the shortlisted photos and the comparable prices against `preferences.md`. | The ad changes, `preferences.md` changes, or `scoring.prompt_version` changes. |
+
+They are separate because they are different jobs — a model that is good at
+pulling `Reifen neu, Kette bei 40tkm` out of a paragraph need not be the one
+you want judging whether a bike looks cared for — and because they go stale for
+different reasons. A seller editing the text does not send the photos back
+through pass 2.
+
+Passes 1 and 2 never write into a listing's own fields. Their findings are
+stored beside it, shown on the listing page under **read from the description**
+and **read from the photos**, and given to pass 3 marked as a model's reading
+rather than a fact.
+
+`provider` names the API behind a pass. Only `anthropic` is implemented; it is
+a setting so a cheaper model can be put behind pass 1 or 2 later without
+touching the prompts. Pass 1 is text-only by construction, so a provider with
+no vision can serve it; pass 2 refuses to run on one and says so.
+
+### Why pass 2 shortlists
+
+A gallery of twenty photographs is rarely twenty pieces of evidence. Five real
+angles and fifteen near-duplicates is the usual shape, and sending all of them
+to pass 3 spends the expensive model's attention — and your credits — on the
+duplicates. Pass 2 looks at up to `extract_photos.max_photos_in` of them with a
+cheap model and passes on at most `extract_photos.shortlist`. `scoring.max_images`
+still caps what pass 3 is actually sent; the shortlist only decides *which*.
+
+With pass 2 off, pass 3 falls back to the first few photos in the seller's
+order, which is arbitrary.
+
+---
+
+## `extract`
+
+Run passes 1 and 2 over whatever needs them. No scraping, no scoring, no email.
+**Calls the API.**
+
+```bash
+karpm extract                  # both passes
+karpm extract --text-only      # pass 1: the description
+karpm extract --photos-only    # pass 2: the photos
+```
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--text-only` | off | Pass 1 only. |
+| `--photos-only` | off | Pass 2 only. |
+
+A listing is read when it has never been read, when what it was read from has
+changed, or when that pass's `prompt_version` changed. A listing queued for
+re-fetching is skipped: its stored text is known to be out of date, so reading
+it now buys an answer about words that are about to be replaced. An ad with no
+downloaded photos is skipped by pass 2 rather than read as having none.
+
+Each pass stops at `max_per_run` listings, and re-reads the config before each
+listing, so unticking a pass during a long run stops it at the next listing.
+
+**Exit code 1** if any listing failed. A failure stores nothing — a row saying
+"read, found nothing" would stop it ever being read again.
+
+---
+
 ## `score`
 
-Score every listing that needs it, then send an instant alert for anything
-clearing the bar. **Calls the Claude API and may send email.**
+Pass 3. Score every listing that needs it, then send an instant alert for
+anything clearing the bar. **Calls the Claude API and may send email.**
 
 ```bash
 karpm score
@@ -266,7 +339,8 @@ karpm score
 
 No options; behaviour comes from `[scoring]` and `[email]` in `config.toml`.
 A listing is scored when it has no score, when its price or text changed since
-the last one, or when `prompt_version` changed.
+the last one, or when `prompt_version` changed. It does not run passes 1 and 2
+first — `karpm run`, the daemon and the dashboard do that.
 
 **Exit code 1** if any instant alert failed to send. Scoring failures for an
 individual listing are logged and skipped — one bad listing does not abort the
@@ -294,13 +368,17 @@ karpm score-one 3422210980 --save            # scores it and stores the result
 
 ---
 
-## Scoring, and turning it off
+## Turning the passes off
 
-`scoring.enabled = false` means nothing is sent to the API, and every command
-respects it:
+Each pass has its own `enabled`, so turning all three off is what stops the API
+costing anything. `scoring.enabled = false` leaves passes 1 and 2 running: their
+findings are worth having on the listing page whether or not anything is being
+scored.
 
-- `run` scrapes and says "scoring is disabled in the config; this run only
-  scrapes" rather than quietly doing half of what its name suggests.
+`scoring.enabled = false` means nothing is scored, and every command respects it:
+
+- `run` scrapes, reads, and says "scoring is disabled in the config; skipping
+  it" rather than quietly doing half of what its name suggests.
 - The **re-score** buttons refuse, and — importantly — **re-score everything**
   does not delete the existing verdicts first. Wiping them and then finding
   scoring switched off would destroy what nothing could rebuild.
@@ -322,14 +400,18 @@ shows its own full path for the same reason.
 
 ## `run`
 
-One full cycle: `scrape`, then `score`, then instant alerts. This is what the
-schedule triggers.
+One full cycle: `scrape`, then passes 1, 2 and 3, then instant alerts. This is
+what the schedule triggers.
 
 ```bash
 karpm run
 ```
 
 No options.
+
+If `schedule.score_at` names any times, this command only scrapes: setting those
+times was a decision about when the money is spent, and passes 1 and 2 spend it
+as surely as pass 3 does.
 
 ---
 
@@ -367,10 +449,13 @@ starts.
 pause — and simply has no slot to fire, which is how you drive it from the web
 UI alone. The status panel reads "not scheduled".
 
-`score_at` works the other way round: **empty means scoring rides along with
-each scrape**, which is what you want when the point is to hear about a good
-listing quickly. Setting times separates the two, so scraping keeps its own
-schedule and the API spending happens only in those slots.
+`score_at` works the other way round: **empty means the three AI passes ride
+along with each scrape**, which is what you want when the point is to hear about
+a good listing quickly. Setting times separates the two, so scraping keeps its
+own schedule and the API spending happens only in those slots. The slot gates
+all three passes, not just the scoring: pass 3 scoring on findings pass 1 never
+made would be the worst of both, the cost of three models and the evidence of
+one.
 
 ```bash
 karpm daemon
@@ -441,7 +526,8 @@ or after whatever it is currently doing finishes.
 |---|---|
 | `scrape now` | One full scrape — the same work a scheduled slot does. |
 | `send digest` | A digest of everything above `email.digest_min_score`. |
-| `score new listings` | Scoring for anything unscored. **Costs money.** |
+| `read new listings` | Passes 1 and 2 for anything unread. **Costs money.** |
+| `score new listings` | Pass 3 for anything unscored. **Costs money.** |
 | `re-score everything` | The same, after deleting every existing score. Asks first, and costs a great deal more. |
 | `pause schedule` | Stops the timed slots firing. Queued commands still run, so the buttons keep working. |
 | `clear the database` | Deletes every listing, its history, scores and downloaded photos, and asks first. Red, and there is no undo. |
@@ -460,6 +546,19 @@ email without deleting it — for one that scored well but is not for you —
 **read the page again** queues a re-fetch, and **score it again** queues a new
 verdict. The dashboard shows how many of each are outstanding, and the listings
 filter has a view for each.
+
+The dashboard's **to read** line says how many listings each of the two reading
+passes still owes a look at, or that the pass is switched off. A pass that has
+quietly stopped and one that has read everything look the same from the outside
+unless the page says which.
+
+A listing's page shows what those passes found in two panels of their own —
+**read from the description** and **read from the photos** — each naming the
+model that said it and when. They are kept apart from the parsed fields on
+purpose: a model's summary of what a seller claims is useful, but mixed in with
+the mileage read off the page it would be indistinguishable from something
+checked. Photos pass 2 shortlisted are outlined in the gallery, with its note on
+each photo underneath.
 
 ### Editing the settings
 

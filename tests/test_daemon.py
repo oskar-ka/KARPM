@@ -704,3 +704,15 @@ def test_has_pending_command_sees_only_what_is_waiting(ready):
     assert db.has_pending_command(conn) is True
     db.claim_command(conn)
     assert db.has_pending_command(conn) is False, "running is not waiting"
+
+
+def test_the_extract_command_runs_the_reading_passes(ready, monkeypatch):
+    """The dashboard's "read new listings" button. Without it the only way to
+    run passes 1 and 2 is to wait for a scrape slot."""
+    conf, conn = ready
+    ran = []
+    monkeypatch.setattr(pipeline, "run_extraction",
+                        lambda *a, **k: ran.append(1) or {})
+    db.queue_command(conn, "extract")
+    daemon._handle_pending_command(conf, conn)
+    assert ran == [1]

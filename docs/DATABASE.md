@@ -45,6 +45,9 @@ about what things sell for, as opposed to what people ask for.
 3. **Fetch.** Open the ad pages of the first three groups only. Unchanged ads
    just have `last_seen_at` bumped.
 4. **Images**, then **reconcile** anything that was not in the results.
+5. **Read**, then **score.** Pass 1 reads the descriptions, pass 2 the photos,
+   pass 3 weighs everything up. The reading comes first so pass 3 has it; the
+   photos are downloaded in step 4 for the same reason.
 
 Doing it in this order means a run knows exactly how much work it faces before
 starting any of it, and the delisting check in step 4 gets the complete set of
@@ -153,6 +156,47 @@ input_tokens    4820        output_tokens  512
 
 The `listing_current` view joins each listing to its newest score. The emails
 and `karpm top` read it, so nobody hand-writes the "latest score" subquery.
+
+## Extractions
+
+What passes 1 and 2 found, one row per listing per pass, `UNIQUE(listing_id,
+kind)` — a pass replaces its own previous answer rather than piling up, because
+the old reading of text that has since been edited is of no use to anyone.
+
+```
+listing_id      2847612345
+kind            text        ← "text" (pass 1) or "photos" (pass 2)
+provider        anthropic   model  claude-haiku-4-5
+prompt_version  v1
+source_hash     9b3a15bf…   ← what this reading was made from
+data_json       {"summary": …, "known_faults": […], …}
+input_tokens    1840        output_tokens  610
+```
+
+`source_hash` is the key that decides when a pass runs again, and it is a
+different thing per pass:
+
+- **text** — the listing's `content_hash`. The seller editing the ad or dropping
+  the price sends it back through pass 1.
+- **photos** — a hash of the positions and URLs of the photos that actually
+  downloaded. A photo added, removed or replaced sends it back through pass 2;
+  an edit to the text does not. Built from what downloaded rather than from what
+  the page promised, so an ad whose photos all failed does not look like one
+  whose photos were read.
+
+So the two passes go stale independently, which is most of the reason they are
+two tables' worth of rows rather than one. A listing marked `needs_refetch` is
+skipped by both: its stored text is known to be out of date, so reading it now
+buys an answer about words that are about to be replaced.
+
+Nothing here is ever written into a listing's own columns. The findings are a
+model's reading of what the seller wrote and photographed; the listing page
+shows them in panels of their own, and pass 3 is given them labelled as claims
+rather than facts. A failed pass stores nothing at all — a row saying "read,
+found nothing" would stop that listing ever being read again.
+
+`extractions` is in `COLLECTED_TABLES`, so **clear the database** removes it
+along with everything else that cost money to collect.
 
 ## Images
 
@@ -366,11 +410,15 @@ is just running any command — existing rows and their history are preserved.
 | 5 | `listings.parser_version`, `needs_refetch`, `needs_rescore`, `ignored` — the staleness flags. |
 | 6 | `listings.color`, `fuel_type`, `drive_type`, `transmission`, `equipment_json` — filled from the syndicated spec block. `PARSER_VERSION` 2. |
 | 7 | `plate` and `plate_season` dropped: reading a plate out of prose was guesswork. Best effort — a column left in place holds NULL and is read by nothing. |
+| 8 | `extractions` — what the two reading passes found, one row per listing per pass. |
 
-## Two kinds of fact
+## Three kinds of fact
 
-A row holds two different things, and the listing page and the scoring prompt
-both keep them apart.
+A listing is described by three different kinds of thing, and the listing page
+and the scoring prompt keep all three apart: what was **read off the page**,
+what was **worked out** from that, and what a model **read out of the seller's
+words and photos**. The first two are the listing's own columns. The third
+lives in `extractions` and is never written into them — see above.
 
 The listing page shows them as three panels — **specifications**, **derived
 figures**, **miscellaneous figures** — and the first two show the same rows for
@@ -397,14 +445,23 @@ another request, and each is closer to what a person actually judges than the
 fields it comes from. Every one may be None, meaning "cannot say" — and is left
 off rather than shown as a zero, which would read as a fact.
 
+**Read by a model** is `extractions`: what passes 1 and 2 made of the
+description and the photos. It gets panels of its own on the listing page,
+labelled with the model that said it, and it reaches pass 3 marked as claims.
+It is the one kind that has not been checked against anything, so it is the one
+kind that says so wherever it appears.
+
 ### What is *not* read from the description
 
-Only the block below. Nothing tries to pull facts out of a seller's prose —
+Only the block below. **The parser** pulls no facts out of a seller's prose —
 no "reads like it has been dropped", no plate hunted out of a sentence. A
 regex over free text guesses, and a wrong fact is worse than a missing one,
-because it is read as this bike's history. That work belongs to the scoring
-model, which sees the description and the photos anyway; the fields exist and
-stay empty until it is given the job.
+because it is read as this bike's history.
+
+That reading is pass 1's job, and what it finds goes to `extractions`, not into
+the listing's columns. The distinction is the whole point: a column means "the
+ad says so", and a model's reading of a paragraph does not get to claim that,
+however good the reading is.
 
 ### The block inside the description
 
