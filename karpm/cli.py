@@ -87,20 +87,79 @@ def cmd_scrape(args) -> int:
     return 0
 
 
-def _render_prompt(request) -> str:
-    """The text a pass would actually be sent, photos excepted.
+# --- showing a prompt ------------------------------------------------------
+#
+# --show-prompt has to be readable and it has to be complete, and of the two,
+# complete wins: a prompt that leaves out the instructions is worse than no
+# prompt, because it looks like the whole thing. So everything that goes to the
+# model is printed, each part fenced by a line of stars, and everything outside
+# those fences is ours and is labelled as such.
+
+FENCE = "*" * 72
+
+
+def _fenced(name: str, body: str, note: str = "") -> str:
+    """One block that is really sent, between two unmistakable lines."""
+    opening = f"*** {name} - SENT{(' - ' + note) if note else ''}"
+    return (f"\n{FENCE}\n{opening}\n{FENCE}\n{body}"
+            f"\n{FENCE}\n*** END OF {name}\n{FENCE}")
+
+
+def _render_prompt(request, what: str = "") -> str:
+    """Everything that would be sent for one request, and nothing else.
 
     Rendered from the request the pass itself builds rather than assembled here,
     or it would drift from what is really sent - which is exactly what
     --show-prompt exists to show.
     """
-    parts = [block["text"] for block in request.blocks if block["type"] == "text"]
-    photos = sum(1 for block in request.blocks if block["type"] == "image")
-    return "\n".join(parts) + f"\n\n[{photos} photo(s) would be attached]"
+    sent = provider._thinking_for(request)          # what this model accepts
+    settings = [f"model       {request.model}",
+                f"max_tokens  {request.max_tokens}"]
+    if "thinking" in sent:
+        settings.append(f"thinking    adaptive, effort {sent['output_config']['effort']}")
+    else:
+        settings.append("thinking    not sent - this model takes neither "
+                        "adaptive thinking nor an effort level")
+    if request.cache_system:
+        settings.append("caching     the system prompt is marked for caching; "
+                        "the rest is not")
+
+    photos = [block for block in request.blocks if block["type"] == "image"]
+    texts = [block for block in request.blocks if block["type"] == "text"]
+    preface = [
+        "-" * 72,
+        f"PREFACE - none of this is sent{(' - ' + what) if what else ''}",
+        "-" * 72,
+        *settings,
+        f"user turn   {len(texts)} text block(s), {len(photos)} photo(s)",
+        "",
+        "Everything between a line of stars and its END line is sent verbatim.",
+        "Everything else on this page is KARPM talking to you.",
+        "-" * 72,
+    ]
+
+    out = ["\n".join(preface), _fenced("SYSTEM PROMPT", request.system)]
+
+    body = []
+    for block in request.blocks:
+        if block["type"] == "text":
+            body.append(block["text"])
+        else:
+            # The bytes go instead of this line. Saying which file, so a
+            # shortlist can be checked against the photos on disk.
+            body.append(f"[IMAGE: {block['path']} - the file's bytes are sent here]")
+    out.append(_fenced("USER MESSAGE", "\n".join(body)))
+
+    if request.schema is not None:
+        out.append(_fenced(
+            "RESPONSE SCHEMA",
+            json.dumps(request.schema.model_json_schema(), indent=2),
+            "the shape the answer must fit, not prose the model reads"))
+    return "\n".join(out) + "\n"
 
 
-def _prompt_text(scorer, conn, row) -> str:
-    return _render_prompt(scorer.build_request(conn, row))
+def _prompt_text(scorer, conn, row, what: str = "") -> str:
+    return _render_prompt(scorer.build_request(conn, row), what)
 
 
 def _extract_kinds(args) -> tuple[str, ...]:
@@ -168,10 +227,8 @@ def cmd_extract_one(args) -> int:
             continue
 
         if args.show_prompt:
-            print("=" * 72)
-            print(f"{label.upper()} FOR {row['id']} (not sent - no API call)")
-            print("=" * 72)
-            print(_render_prompt(request))
+            print(_render_prompt(
+                request, f"{label} for {row['id']}, and no API call was made"))
             continue
 
         photos = sum(1 for block in request.blocks if block["type"] == "image")
@@ -401,7 +458,8 @@ def cmd_score_one(args) -> int:
     scorer = scoring.Scorer(conf.scoring, scoring.load_preferences(conf.scoring.preferences_file),
                             home_plz=conf.home_plz)
     if args.show_prompt:
-        print(_prompt_text(scorer, conn, row))
+        print(_prompt_text(scorer, conn, row,
+                           f"pass 3 for {row['id']}, and no API call was made"))
         return 0
     score = scorer.score_listing(conn, row)
     print(json.dumps(score, indent=2, ensure_ascii=False))
@@ -492,13 +550,12 @@ def cmd_trial(args) -> int:
     if args.show_prompt and report.rows:
         listing_id = report.rows[0]["id"]
         row = db.get_listing(conn, listing_id)
-        print("\n" + "=" * 72)
-        print(f"PROMPT THAT WOULD BE SENT FOR {listing_id} (not sent - no API call)")
-        print("=" * 72)
         scorer = scoring.Scorer(conf.scoring,
                                 scoring.load_preferences(conf.scoring.preferences_file),
                                 home_plz=conf.home_plz)
-        print(_prompt_text(scorer, conn, row))
+        print("\n" + _prompt_text(
+            scorer, conn, row,
+            f"pass 3 for {listing_id}, and no API call was made"))
 
     conn.close()
     return 0 if report.ok else 1

@@ -392,8 +392,6 @@ def test_show_prompt_includes_what_the_passes_found(conn, tmp_path, capsys):
 
     assert "A tidy GS with a fresh service." in text
     assert "Clean, photographed in a garage." in text
-    # And it says how many photos ride along, which the text alone cannot show.
-    assert "photo(s) would be attached" in text
 
 
 def test_the_scoring_pass_is_shown_the_shortlist_not_the_first_few(conn, tmp_path):
@@ -484,7 +482,28 @@ def test_extract_one_show_prompt_costs_nothing(one, capsys, run_cli):
     assert fake.seen == [], "--show-prompt must not call the API"
     out = capsys.readouterr().out
     assert "Kette und Ritzel" in out                 # the ad, as pass 1 gets it
-    assert "3 photo(s) would be attached" in out     # what pass 2 would be sent
+    # The instructions, which are most of what is sent and were once left out
+    # entirely - a prompt missing them looks like the whole thing.
+    assert "You read German motorcycle classified ads" in out
+    assert "You look at photographs of a used motorcycle" in out
+    # Every photo named, so a shortlist can be checked against the files.
+    assert out.count("[IMAGE: ") == 3
+    # And the schema, which shapes the answer as surely as the words do.
+    assert "RESPONSE SCHEMA" in out and '"known_faults"' in out
+
+
+def test_show_prompt_fences_what_is_sent_from_what_is_ours(one, capsys, run_cli):
+    """A preface is fine; a preface you cannot tell from the prompt is not."""
+    fake = FakeProvider({"text": TEXT_ANSWER, "photos": PHOTO_ANSWER})
+    run_cli(one, "extract-one", "111", "--text-only", "--show-prompt", fake=fake)
+    out = capsys.readouterr().out
+
+    assert "PREFACE - none of this is sent" in out
+    for name in ("SYSTEM PROMPT", "USER MESSAGE", "RESPONSE SCHEMA"):
+        assert f"*** {name} - SENT" in out
+        assert f"*** END OF {name}" in out
+    # Opening and closing fence for each of the three blocks.
+    assert out.count("*" * 72) == 12
 
 
 def test_extract_one_on_an_unknown_id_says_so(one, capsys, run_cli):
@@ -647,3 +666,17 @@ def test_a_missing_prompt_file_is_not_a_complaint(conn, tmp_path, caplog):
     with caplog.at_level("WARNING"):
         assert passes.load_prompt("text", cfg).startswith("You read German")
     assert caplog.text == ""
+
+
+def test_score_one_show_prompt_includes_the_preferences(conn, tmp_path, capsys):
+    """Pass 3's system prompt carries the whole preferences file. Leaving it out
+    of --show-prompt hid the half of the prompt people actually edit."""
+    from karpm import cli, scoring
+    listing(conn)
+    conf = Config()
+    scorer = scoring.Scorer(conf.scoring, "## What it needs\n\n- Under 60,000 km",
+                            client=FakeProvider())
+
+    text = cli._prompt_text(scorer, conn, db.get_listing(conn, "111"))
+    assert "- Under 60,000 km" in text
+    assert "*** SYSTEM PROMPT - SENT" in text

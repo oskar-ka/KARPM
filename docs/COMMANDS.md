@@ -377,7 +377,7 @@ karpm extract-one 3422210980 --photos-only     # pass 2 alone
 | `listing_id` | required | Kleinanzeigen ad id, as stored in `listings.id`. |
 | `--text-only` | off | Pass 1 only. |
 | `--photos-only` | off | Pass 2 only. |
-| `--show-prompt` | off | Print what would be sent and exit without calling the API. Costs nothing. |
+| `--show-prompt` | off | Print everything that would be sent and exit without calling the API. Costs nothing. |
 | `--save` | off | Store what it finds. Without it the findings are printed only. |
 
 Unlike [`extract`](#extract) it does not care whether the listing is due. Naming
@@ -387,6 +387,20 @@ nothing by default: a trial that overwrites the stored reading is not a trial.
 
 The findings go to stdout and everything else — token counts, "saved", why a
 pass had nothing to look at — to stderr, so `karpm extract-one <id> | jq` works.
+
+**What `--show-prompt` prints** is everything the model is sent, in three
+blocks, each fenced by a line of stars and its own `END OF` line:
+
+| Block | What it is |
+|---|---|
+| `SYSTEM PROMPT` | The pass's instructions — the file you edit on the prompts page, or the built-in one. For pass 3 this also carries the whole of `preferences.md`. |
+| `USER MESSAGE` | The listing itself. Each photo appears as an `[IMAGE: <path>]` line where its bytes go, so a shortlist can be checked against the files on disk. |
+| `RESPONSE SCHEMA` | The shape the answer has to fit. Sent as a format rather than as prose, but it shapes the reply as surely as the words do. |
+
+Anything outside those fences — the model name, whether adaptive thinking and an
+effort level are being sent, what is marked for caching — is KARPM talking to
+you and is not part of the prompt. `karpm score-one <id> --show-prompt` prints
+pass 3 in the same shape.
 
 **Exit code 1** if the listing id is not in the database, or if a pass failed.
 A pass with nothing to look at (an ad whose photos have not downloaded) says so
@@ -427,7 +441,7 @@ karpm score-one 3422210980 --save            # scores it and stores the result
 | Argument / flag | Default | Meaning |
 |---|---|---|
 | `listing_id` | required | Kleinanzeigen ad id, as stored in `listings.id`. |
-| `--show-prompt` | off | Print the prompt and exit without calling the API. Costs nothing. |
+| `--show-prompt` | off | Print everything that would be sent — instructions, listing and schema — and exit without calling the API. Costs nothing. See [`extract-one`](#extract-one) for the shape. |
 | `--save` | off | Store the resulting score. Without it the score is printed only. |
 
 **Exit code 1** if the listing id is not in the database.
