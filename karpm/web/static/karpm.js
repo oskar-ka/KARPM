@@ -54,3 +54,34 @@
     block.remove();
   });
 })();
+
+
+// Hide the settings the chosen model has no use for. A row carries the model
+// ids it means anything for; a model outside that list gets the row hidden.
+//
+// Hidden, not removed: the input still submits, so an effort level set for one
+// model survives a look at a model that has no use for it. And `hidden` only
+// affects what is drawn - nothing is dropped from the save.
+(function () {
+  var selects = document.querySelectorAll("select[data-model]");
+  if (!selects.length) return;
+
+  function apply(select) {
+    var section = select.closest("section");
+    if (!section) return;
+    var chosen = select.value;
+    section.querySelectorAll("[data-shown-for]").forEach(function (row) {
+      var ids = row.getAttribute("data-shown-for").split(" ");
+      // A model we have never heard of is assumed to take everything: it is
+      // newer than our list, not older, and guessing the other way would hide
+      // a setting that does work.
+      var known = select.querySelector('option[value="' + chosen + '"]:not([data-unknown])');
+      row.hidden = known !== null && ids.indexOf(chosen) === -1;
+    });
+  }
+
+  selects.forEach(function (select) {
+    apply(select);
+    select.addEventListener("change", function () { apply(select); });
+  });
+})();

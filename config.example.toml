@@ -103,6 +103,12 @@ give_up_after_failures = 3
 # `provider` names the API behind a pass. Only "anthropic" is implemented; it is
 # a setting so that a cheaper one can be put behind pass 1 or 2 later without
 # touching the prompts.
+#
+# `effort` only means anything on models that take one. Haiku 4.5 takes neither
+# adaptive thinking nor an effort level and rejects a request carrying them, so
+# the setting is left out of what is sent to it - the web UI hides the field
+# rather than offering a way to break every call. A model not listed in
+# karpm/ai/models.py can still be named here; it is assumed to take both.
 
 [extract_text]
 # Pass 1: read the description and write down what it says - work done, faults

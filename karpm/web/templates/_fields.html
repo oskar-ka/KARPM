@@ -1,15 +1,26 @@
 {# One row: label on the left, the control, then a note on the right. #}
 {% macro row(spec, name, value, error) %}
-<div class="field {{ 'bad' if error }}">
+{# data-shown-for: the model ids this row means anything for. The script hides
+   it for the others; the input still submits, so a value set for one model
+   survives a look at another. #}
+<div class="field {{ 'bad' if error }}"
+     {% if spec.shown_for %}data-shown-for="{{ spec.shown_for | join(' ') }}"{% endif %}>
   <label for="{{ name }}">{{ spec.key }}</label>
   <div class="control">
     {% if spec.kind == 'bool' %}
       <input type="checkbox" id="{{ name }}" name="{{ name }}" value="1"
              {{ 'checked' if value }}>
     {% elif spec.kind == 'choice' %}
-      <select id="{{ name }}" name="{{ name }}">
+      <select id="{{ name }}" name="{{ name }}"
+              {% if spec.key == 'model' %}data-model{% endif %}>
+        {% if spec.open_choice and value and value not in spec.choices %}
+          {# Set by hand to something we have not heard of. Offering it back is
+             what stops a save from silently swapping it for the first option. #}
+          <option value="{{ value }}" selected data-unknown>{{ value }} - not in the list</option>
+        {% endif %}
         {% for choice in spec.choices %}
-          <option value="{{ choice }}" {{ 'selected' if value == choice }}>{{ choice }}</option>
+          <option value="{{ choice }}" {{ 'selected' if value == choice }}>{{
+            model_labels.get(choice, choice) }}</option>
         {% endfor %}
       </select>
     {% elif spec.kind == 'lines' %}

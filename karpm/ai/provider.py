@@ -19,6 +19,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
+from . import models
+
 log = logging.getLogger(__name__)
 
 
@@ -88,6 +90,23 @@ MEDIA_TYPES = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png",
 
 # --- Anthropic ------------------------------------------------------------
 
+def _thinking_for(request: Request) -> dict:
+    """The thinking and effort parameters this model accepts - or neither.
+
+    Not every model takes `thinking: adaptive` and an effort level, and one that
+    does not rejects the whole request rather than ignoring what it cannot use.
+    The catalogue decides. A model missing from it is assumed to take both,
+    since that is what a model newer than the table will be.
+    """
+    known = models.get(request.model)
+    if known is not None and not known.thinking:
+        return {}
+    effort = request.effort
+    if known is not None and effort not in known.effort:
+        effort = "high"                 # what the API itself defaults to
+    return {"thinking": {"type": "adaptive"}, "output_config": {"effort": effort}}
+
+
 class AnthropicProvider:
     """Claude, through the official SDK."""
 
@@ -118,10 +137,9 @@ class AnthropicProvider:
                 model=request.model,
                 max_tokens=request.max_tokens,
                 system=system,
-                thinking={"type": "adaptive"},
-                output_config={"effort": request.effort},
                 messages=[{"role": "user", "content": self._content(request.blocks)}],
                 output_format=request.schema,
+                **_thinking_for(request),
             )
         except anthropic.APIError as exc:
             raise ProviderError(f"{request.model}: {exc}") from exc

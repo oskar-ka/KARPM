@@ -506,3 +506,74 @@ def test_extract_one_says_when_there_is_nothing_to_look_at(tmp_path, capsys, run
 def test_extract_one_reports_a_failure_rather_than_exiting_clean(one, capsys, run_cli):
     assert run_cli(one, "extract-one", "111", "--text-only",
                 fake=FakeProvider(fail=True)) == 1
+
+
+# --- what each model is actually sent ---------------------------------------
+
+class FakeAnthropic:
+    """Just enough of the SDK to record what a request was built as."""
+
+    def __init__(self):
+        self.calls = []
+        self.messages = self
+
+    def parse(self, **kwargs):
+        self.calls.append(kwargs)
+        usage = type("U", (), {"input_tokens": 10, "output_tokens": 5,
+                               "cache_read_input_tokens": 0})()
+        parsed = type("P", (), {"model_dump": lambda self: {"summary": "ok"}})()
+        return type("R", (), {"stop_reason": "end_turn", "parsed_output": parsed,
+                              "model": kwargs["model"], "usage": usage})()
+
+
+def _sent(model, effort="medium"):
+    client = FakeAnthropic()
+    engine = provider.AnthropicProvider(client=client)
+    engine.complete(provider.Request(system="s", blocks=[provider.text("hi")],
+                                     schema=None, model=model, effort=effort))
+    return client.calls[0]
+
+
+def test_a_model_without_adaptive_thinking_is_not_sent_it():
+    """Haiku 4.5 takes neither adaptive thinking nor an effort level, and
+    rejects the whole request rather than ignoring what it cannot use - so
+    sending them failed every listing in the queue with a 400."""
+    sent = _sent("claude-haiku-4-5")
+    assert "thinking" not in sent and "output_config" not in sent
+    assert sent["model"] == "claude-haiku-4-5"
+
+
+def test_a_model_with_adaptive_thinking_is_sent_it():
+    sent = _sent("claude-opus-5", effort="xhigh")
+    assert sent["thinking"] == {"type": "adaptive"}
+    assert sent["output_config"] == {"effort": "xhigh"}
+
+
+def test_an_effort_the_model_does_not_have_falls_back_to_the_default():
+    """Rather than passing a level the API would reject."""
+    sent = _sent("claude-haiku-4-5", effort="max")
+    assert "output_config" not in sent
+
+
+def test_a_model_we_have_never_heard_of_is_assumed_to_be_a_new_one():
+    """A model missing from the table is newer than the table, not older.
+    Assuming otherwise would silently drop thinking from a model that has it."""
+    sent = _sent("claude-opus-9-unreleased")
+    assert sent["thinking"] == {"type": "adaptive"}
+
+
+def test_every_default_model_is_one_the_catalogue_knows():
+    """The provider decides what to send from the catalogue, so a default it
+    has never heard of would be guessed at rather than known."""
+    from karpm.ai import models
+    conf = Config()
+    for cfg in (conf.extract_text, conf.extract_photos, conf.scoring):
+        assert models.get(cfg.model) is not None, cfg.model
+
+
+def test_every_default_effort_is_one_its_default_model_accepts():
+    from karpm.ai import models
+    conf = Config()
+    for cfg in (conf.extract_text, conf.extract_photos, conf.scoring):
+        known = models.get(cfg.model)
+        assert not known.effort or cfg.effort in known.effort, cfg.model

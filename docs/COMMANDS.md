@@ -285,6 +285,33 @@ a setting so a cheaper model can be put behind pass 1 or 2 later without
 touching the prompts. Pass 1 is text-only by construction, so a provider with
 no vision can serve it; pass 2 refuses to run on one and says so.
 
+### Choosing a model
+
+`karpm/ai/models.py` is the list of models the config page offers, with what
+each costs and what it accepts. The config page builds its dropdown from it and
+the provider decides from it what to put in a request, so the two cannot drift
+apart — which is the bug that made it a list: the page offered an effort level
+for a model that rejects the parameter outright, and every listing in the queue
+came back a 400.
+
+**Not every model takes an effort level.** The newer ones think adaptively and
+take `effort`; Haiku 4.5 takes neither and fails the whole request rather than
+ignoring them. The config page hides the `effort` row for a model that has no
+use for it, and the request is built without the setting rather than with one
+the model would reject. The stored value is left alone either way, so switching
+back brings it back.
+
+**A model not in the list still works.** Write it into `config.toml` by hand and
+the page offers it back marked *not in the list* rather than replacing it with
+whichever option came first — a save about something else must not quietly
+change which model you are paying. An unknown model is assumed to take adaptive
+thinking and an effort level, since a model missing from the list is newer than
+the list rather than older. If that assumption is wrong you get a 400 naming the
+model, and the fix is to pick one from the dropdown.
+
+Prices shown on the page are per million tokens as of the date in that file.
+They are there to make the choice an informed one, not to bill anything.
+
 ### Why pass 2 shortlists
 
 A gallery of twenty photographs is rarely twenty pieces of evidence. Five real
@@ -598,7 +625,9 @@ each photo underneath.
 ### Editing the settings
 
 **Config** is a field per setting, grouped by the table it lives in, with the
-setting's name on the left and a note on what it does on the right. **Searches**
+setting's name on the left and a note on what it does on the right. A setting
+that means nothing for the model a pass is pointed at is hidden rather than
+offered — see [Choosing a model](#choosing-a-model). **Searches**
 is the same, one block per `[[searches]]` entry, with a button to add another
 and a link to remove one.
 

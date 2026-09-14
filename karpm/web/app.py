@@ -38,6 +38,9 @@ def create_app(config_path: str = "config.toml") -> Flask:
 
     # The template builds field names the same way the parser reads them.
     app.jinja_env.globals["input_name"] = fields.input_name
+    # A model id on its own says nothing about what it costs. Globals rather
+    # than context because the field macro needs them and macros see globals.
+    app.jinja_env.globals["model_labels"] = fields.MODEL_LABELS
 
     @app.template_filter("fromjson")
     def _fromjson(value):
@@ -475,6 +478,12 @@ def _coerce(spec, raw: str):
     if spec.kind == "lines":
         return [line.strip() for line in raw.splitlines() if line.strip()]
     if spec.kind == "choice":
+        if spec.open_choice:
+            # The dropdown suggests; it does not decide. A model typed into the
+            # file by hand is how you use one newer than our table, and a save
+            # from this page must not quietly replace it. (Blank is caught by
+            # both callers before this, as "this cannot be empty".)
+            return raw.strip()
         if raw not in spec.choices:
             raise ValueError(f"must be one of {', '.join(spec.choices)}")
         return raw

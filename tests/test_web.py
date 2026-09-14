@@ -1120,3 +1120,63 @@ def test_a_pass_switched_off_says_so_rather_than_reading_as_done(client, app):
         encoding="utf-8")
     body = client.get("/status-fragment").get_data(as_text=True)
     assert "photos pass off" in body
+
+
+# --- picking a model -----------------------------------------------------
+
+def test_the_model_is_a_dropdown_of_what_we_know(client):
+    """Typed by hand it was a way to name a model the code cannot reason about
+    - and one of them rejects the parameters every request was sending."""
+    body = client.get("/config").get_data(as_text=True)
+    assert 'name="scoring__model"' in body and "<select" in body
+    for model_id in ("claude-haiku-4-5", "claude-opus-5"):
+        assert f'value="{model_id}"' in body
+    # Priced, because the id alone does not say what the choice costs.
+    assert "$1/$5 per Mtok" in body and "$5/$25 per Mtok" in body
+
+
+def test_effort_says_which_models_it_applies_to(client):
+    """Haiku takes no effort level and errors when sent one, so the row is
+    hidden for it rather than offered as a way to break every call."""
+    body = client.get("/config").get_data(as_text=True)
+    assert 'data-shown-for="claude-sonnet-5 claude-opus-5 claude-fable-5-1"' in body
+    assert "claude-haiku-4-5" not in re.search(
+        r'data-shown-for="([^"]*)"', body).group(1)
+
+
+def test_a_model_set_by_hand_is_offered_back_rather_than_replaced(client, app):
+    """The dropdown suggests; it does not decide. Dropping an unknown value
+    would swap a deliberate choice for whichever option came first, on a save
+    that was about something else entirely."""
+    _, config_path, _ = app
+    config_path.write_text(
+        config_path.read_text(encoding="utf-8").replace(
+            "[scoring]", '[scoring]\nmodel = "claude-opus-9-unreleased"'),
+        encoding="utf-8")
+
+    body = client.get("/config").get_data(as_text=True)
+    assert 'value="claude-opus-9-unreleased" selected' in body
+    assert "not in the list" in body
+
+
+def test_saving_keeps_a_model_the_dropdown_has_never_heard_of(client, app):
+    _, config_path, _ = app
+    config_path.write_text(
+        config_path.read_text(encoding="utf-8").replace(
+            "[scoring]", '[scoring]\nmodel = "claude-opus-9-unreleased"'),
+        encoding="utf-8")
+
+    data = form(client, {"scoring__max_per_run": "42"})   # a save about something else
+    assert client.post("/config", data=data).status_code == 302
+
+    conf = load_config(config_path)
+    assert conf.scoring.model == "claude-opus-9-unreleased"
+    assert conf.scoring.max_per_run == 42
+
+
+def test_a_blank_model_is_refused_rather_than_written(client, app):
+    _, config_path, _ = app
+    response = client.post("/config", data=form(client, {"scoring__model": ""}))
+    assert response.status_code == 200          # back with the error, not saved
+    assert "this cannot be empty" in response.get_data(as_text=True)
+    assert load_config(config_path).scoring.model == "claude-opus-5"

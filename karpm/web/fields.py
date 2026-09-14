@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field as dc_field
 
+from karpm.ai import models
 from karpm.ai.provider import PROVIDERS
 
 # Kinds map to a form control and to the way the value is written back as TOML:
@@ -27,7 +28,38 @@ KINDS = ("text", "int", "float", "bool", "choice", "lines", "numbers")
 # Every pass picks its provider from the ones actually implemented, so adding
 # one to karpm.ai.provider puts it on the page without an edit here.
 PROVIDER_CHOICES = tuple(sorted(PROVIDERS))
-EFFORTS = ("low", "medium", "high", "xhigh", "max")
+EFFORTS = models.EVERY_EFFORT
+
+# Both built from karpm.ai.models, so a model added there appears here and is
+# understood by the provider at the same time.
+MODEL_CHOICES = models.IDS
+MODEL_LABELS = models.LABELS
+
+
+PRICE_NOTE = (f"Prices are per million tokens as of {models.PRICES_AS_OF}, for "
+              f"choosing between them - not a bill. A model not in the list can "
+              f"still be set by hand in the file, and is kept.")
+
+
+def model_field(help: str = "") -> Field:
+    return Field("model", "choice", f"{help} {PRICE_NOTE}".strip(),
+                 choices=MODEL_CHOICES, open_choice=True)
+
+
+EFFORT_NOTE = ("How hard the model thinks. Only some models take one - the row "
+               "is hidden for the others, and the setting is left out of what "
+               "is sent to them rather than being rejected.")
+
+
+def effort_field(help: str = "") -> Field:
+    """Effort, shown only for the models that accept one.
+
+    Haiku takes neither adaptive thinking nor an effort level, and rejects the
+    whole request rather than ignoring what it cannot use - so offering the
+    setting for it was offering a way to break every call the pass makes.
+    """
+    return Field("effort", "choice", help or EFFORT_NOTE, choices=EFFORTS,
+                 shown_for=models.WITH_EFFORT)
 
 
 @dataclass(frozen=True)
@@ -39,6 +71,15 @@ class Field:
     optional: bool = False          # blank is allowed and means "not set"
     placeholder: str = ""
     wide: bool = False
+    # A dropdown of the values worth suggesting that still accepts one it has
+    # never heard of - how you point a pass at a model released after this was
+    # written. Without it, saving the page would quietly replace a hand-typed
+    # model with whichever option happened to be first.
+    open_choice: bool = False
+    # Model ids this setting means anything for. Empty means "always". The page
+    # hides the row for the others rather than offering a setting that would be
+    # rejected by the model the section is pointed at.
+    shown_for: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -143,9 +184,8 @@ SECTIONS = (
         Field("enabled", "bool", "Off skips the pass. Scoring then sees the raw "
                                  "description, as it did before."),
         Field("provider", "choice", "", choices=PROVIDER_CHOICES),
-        Field("model", "text", "A cheap model is enough here - it is reading, not "
-                               "judging."),
-        Field("effort", "choice", "", choices=EFFORTS),
+        model_field("A cheap model is enough here - it is reading, not judging."),
+        effort_field(),
         Field("prompt_version", "text", "Bump this to run the pass again over "
                                         "everything after editing the prompt."),
         Field("max_per_run", "int", "Most listings this pass handles in one run."),
@@ -160,8 +200,8 @@ SECTIONS = (
                                  "seller's order instead of a chosen set."),
         Field("provider", "choice", "Must be a provider that can see images.",
               choices=PROVIDER_CHOICES),
-        Field("model", "text"),
-        Field("effort", "choice", "", choices=EFFORTS),
+        model_field("Must be a model that can see images."),
+        effort_field(),
         Field("prompt_version", "text", "Bump this to run the pass again over "
                                         "everything after editing the prompt."),
         Field("max_per_run", "int", "Most listings this pass handles in one run."),
@@ -180,10 +220,9 @@ SECTIONS = (
                                  "their own switches, so turning all three off is "
                                  "what stops the API costing anything."),
         Field("provider", "choice", "", choices=PROVIDER_CHOICES),
-        Field("model", "text", "Pass 3, the one that decides. This is where a better "
-                               "model earns its price."),
-        Field("effort", "choice", "How hard the model thinks about each listing.",
-              choices=EFFORTS),
+        model_field("Pass 3, the one that decides. This is where a better model "
+                    "earns its price."),
+        effort_field(),
         Field("prompt_version", "text", "Bump this after editing your preferences to score "
                                         "everything again against them."),
         Field("preferences_file", "text", "", wide=True),
