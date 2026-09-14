@@ -80,11 +80,13 @@ class Provider(Protocol):
         ...
 
 
-# --- Anthropic ------------------------------------------------------------
-
+# What a suffix on disk means when the bytes are sent. karpm.images reads this
+# same table rather than keeping one of its own.
 MEDIA_TYPES = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png",
                ".webp": "image/webp", ".gif": "image/gif"}
 
+
+# --- Anthropic ------------------------------------------------------------
 
 class AnthropicProvider:
     """Claude, through the official SDK."""

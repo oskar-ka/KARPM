@@ -1,22 +1,22 @@
-"""Scoring listings with Claude.
+"""Pass 3: the verdict.
 
-Each listing is judged against your written preferences and against what the
-database has actually seen for the same model, and comes back as a structured
-score rather than prose - so the result is sortable, storable, and comparable
-across months of listings.
+Each listing is judged against your written preferences, against what the two
+reading passes made of its description and photos, and against what the database
+has actually seen for the same model. It comes back as a structured score rather
+than prose - so the result is sortable, storable, and comparable across months
+of listings.
 """
 
 from __future__ import annotations
 
-import base64
 import json
 import logging
 from pathlib import Path
 
-import anthropic
 from pydantic import BaseModel, Field
 
-from . import db, derived, images
+from . import db, derived
+from .ai import provider
 from .parse.fields import is_mapped
 
 log = logging.getLogger(__name__)
@@ -248,66 +248,54 @@ def _image_blocks(conn, listing_id: str, max_images: int,
         path = Path(row["local_path"]) if row["local_path"] else None
         if not path or not path.exists():
             continue
-        blocks.append({
-            "type": "image",
-            "source": {
-                "type": "base64",
-                "media_type": images.media_type(path),
-                "data": base64.standard_b64encode(path.read_bytes()).decode("ascii"),
-            },
-        })
+        blocks.append(provider.image(path))
     return blocks
 
 
 class Scorer:
-    def __init__(self, cfg, preferences: str, client: anthropic.Anthropic | None = None,
+    """Pass 3, through the same seam as the two reading passes.
+
+    It asks a provider rather than the Anthropic SDK directly, so `provider` in
+    [scoring] is a real setting: the pass that decides can be put behind a
+    different model from the two that feed it.
+    """
+
+    def __init__(self, cfg, preferences: str, client=None,
                  home_plz: str | None = None) -> None:
         self.cfg = cfg
         self.preferences = preferences
         self.home_plz = home_plz
-        self.client = client or anthropic.Anthropic()
+        self.engine = client or provider.get(cfg.provider)
 
-    def score_listing(self, conn, row) -> dict:
+    def build_request(self, conn, row) -> provider.Request:
         comparables = db.comparable_stats(conn, row)
         worked_out = derived.summarise(conn, row, self.home_plz)
         found = db.extractions_for(conn, row["id"])
         shortlist = (found.get("photos", {}).get("data", {}) or {}).get("shortlist")
 
-        content: list[dict] = [
-            {"type": "text", "text": listing_to_text(row, comparables, worked_out, found)},
-            *_image_blocks(conn, row["id"], self.cfg.max_images, shortlist),
-        ]
-
-        response = self.client.messages.parse(
-            model=self.cfg.model,
-            max_tokens=4000,
-            # The rubric and preferences are identical for every listing in a run,
-            # so they sit in a cached system prefix and the listing goes in the
-            # user turn.
-            system=[
-                {
-                    "type": "text",
-                    "text": SYSTEM_PROMPT + "\n\nBuyer's preferences:\n\n" + self.preferences,
-                    "cache_control": {"type": "ephemeral"},
-                }
+        return provider.Request(
+            # The rubric and preferences are identical for every listing in a
+            # run, so they sit in a cached system prefix and the listing goes in
+            # the user turn.
+            system=SYSTEM_PROMPT + "\n\nBuyer's preferences:\n\n" + self.preferences,
+            blocks=[
+                provider.text(listing_to_text(row, comparables, worked_out, found)),
+                *_image_blocks(conn, row["id"], self.cfg.max_images, shortlist),
             ],
-            messages=[{"role": "user", "content": content}],
-            thinking={"type": "adaptive"},
-            output_config={"effort": self.cfg.effort},
-            output_format=ListingScore,
+            schema=ListingScore,
+            model=self.cfg.model,
+            effort=self.cfg.effort,
         )
 
-        if response.stop_reason == "refusal":
-            raise RuntimeError(f"model declined to score listing {row['id']}")
-
-        parsed: ListingScore = response.parsed_output
+    def score_listing(self, conn, row) -> dict:
+        reply = self.engine.complete(self.build_request(conn, row))
         return {
-            **parsed.model_dump(),
-            "model": self.cfg.model,
+            **reply.data,
+            "model": reply.model or self.cfg.model,
             "prompt_version": self.cfg.prompt_version,
             "content_hash": row["content_hash"],
-            "input_tokens": response.usage.input_tokens,
-            "output_tokens": response.usage.output_tokens,
+            "input_tokens": reply.input_tokens,
+            "output_tokens": reply.output_tokens,
         }
 
 
@@ -331,8 +319,12 @@ def score_pending(conn, cfg, home_plz: str | None = None,
     if marked:
         log.info("preferences.md changed - %s listing(s) marked for re-scoring", marked)
 
-    scorer = Scorer(cfg, preferences, home_plz=home_plz)
     rows = db.unscored_listings(conn, cfg.rescore_on_change, cfg.prompt_version, cfg.max_per_run)
+    if not rows:
+        return []
+    # Built after the queue is read: with nothing to score there is no reason to
+    # want an API key, and a run that only scrapes must not fail for want of one.
+    scorer = Scorer(cfg, preferences, home_plz=home_plz)
     written = []
 
     for row in rows:
@@ -342,7 +334,7 @@ def score_pending(conn, cfg, home_plz: str | None = None,
             break
         try:
             score = scorer.score_listing(conn, row)
-        except anthropic.APIError as exc:
+        except provider.ProviderError as exc:
             log.error("scoring failed for %s: %s", row["id"], exc)
             continue
         except Exception as exc:

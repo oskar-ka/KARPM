@@ -5,13 +5,12 @@ point of the seam - a pass that could only be tested against Anthropic would be
 a pass nobody could put another model behind.
 """
 
-import json
 from pathlib import Path
 
 import pytest
 
 from karpm import db, pipeline
-from karpm.ai import extract, passes, provider
+from karpm.ai import extract, provider
 from karpm.config import Config
 
 PNG = bytes.fromhex(
@@ -97,7 +96,7 @@ def with_photos(conn, tmp_path, listing_id="111", count=3):
 # --- what a pass is asked -------------------------------------------------
 
 def test_the_text_pass_is_given_the_ad_and_nothing_else(conn):
-    row = listing(conn)
+    listing(conn)
     fake = FakeProvider({"text": TEXT_ANSWER})
     extract.run_pass(conn, "text", Config().extract_text, fake)
 
@@ -372,3 +371,42 @@ def test_reading_happens_even_with_scoring_off(conn, tmp_path, monkeypatch):
 
     pipeline.run_once(conf, conn, client=fake)
     assert db.get_extraction(conn, "111", "text") is not None
+
+
+def test_show_prompt_includes_what_the_passes_found(conn, tmp_path, capsys):
+    """--show-prompt exists to show what will really be sent. Assembled
+    separately from the real prompt, it would drift from it and say so
+    confidently."""
+    from karpm import cli, scoring
+    listing(conn)
+    with_photos(conn, tmp_path)
+    conf = Config()
+    extract.run_pass(conn, "text", conf.extract_text, FakeProvider({"text": TEXT_ANSWER}))
+    extract.run_pass(conn, "photos", conf.extract_photos,
+                     FakeProvider({"photos": PHOTO_ANSWER}))
+
+    scorer = scoring.Scorer(conf.scoring, "a cheap GS", client=FakeProvider())
+    text = cli._prompt_text(scorer, conn, db.get_listing(conn, "111"))
+
+    assert "A tidy GS with a fresh service." in text
+    assert "Clean, photographed in a garage." in text
+    # And it says how many photos ride along, which the text alone cannot show.
+    assert "photo(s) would be attached" in text
+
+
+def test_the_scoring_pass_is_shown_the_shortlist_not_the_first_few(conn, tmp_path):
+    """The whole point of pass 2: without it pass 3 sees whatever the seller
+    happened to upload first."""
+    from karpm import scoring
+    listing(conn)
+    with_photos(conn, tmp_path, count=6)
+    conf = Config()
+    conf.scoring.max_images = 2
+    extract.run_pass(conn, "photos", conf.extract_photos,
+                     FakeProvider({"photos": {**PHOTO_ANSWER, "shortlist": [4, 5]}}))
+
+    scorer = scoring.Scorer(conf.scoring, "a cheap GS", client=FakeProvider())
+    request = scorer.build_request(conn, db.get_listing(conn, "111"))
+    chosen = [b["path"] for b in request.blocks if b["type"] == "image"]
+
+    assert [Path(p).name for p in chosen] == ["111-4.png", "111-5.png"]

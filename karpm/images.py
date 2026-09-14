@@ -195,5 +195,10 @@ def _download(fetcher, row, delay_range, preferred=None) -> tuple[bytes | None, 
 
 
 def media_type(path: str | Path) -> str:
-    suffix = Path(path).suffix.lower()
-    return {".png": "image/png", ".webp": "image/webp"}.get(suffix, "image/jpeg")
+    """One table, shared with the provider that has to label the bytes it sends.
+
+    Two copies of this drift, and the symptom is an API rejecting a photo for
+    being the wrong type long after the suffix list stopped matching.
+    """
+    from .ai.provider import MEDIA_TYPES      # stdlib only; no cycle
+    return MEDIA_TYPES.get(Path(path).suffix.lower(), "image/jpeg")

@@ -9,7 +9,7 @@ import re
 import sys
 from pathlib import Path
 
-from . import daemon, db, derived, images, mailer, pipeline, scoring, trial
+from . import daemon, db, images, mailer, pipeline, scoring, trial
 from .ai import extract
 from .config import SearchConfig, load_config
 from .http import Blocked, Fetcher
@@ -83,6 +83,18 @@ def cmd_scrape(args) -> int:
     print(json.dumps(result, indent=2))
     conn.close()
     return 0
+
+
+def _prompt_text(scorer, conn, row) -> str:
+    """The text pass 3 would actually be sent, photos excepted.
+
+    Built through the scorer rather than assembled here, or it would drift from
+    what is really sent - which is exactly what --show-prompt exists to show.
+    """
+    request = scorer.build_request(conn, row)
+    parts = [block["text"] for block in request.blocks if block["type"] == "text"]
+    photos = sum(1 for block in request.blocks if block["type"] == "image")
+    return "\n".join(parts) + f"\n\n[{photos} photo(s) would be attached]"
 
 
 def cmd_extract(args) -> int:
@@ -292,10 +304,10 @@ def cmd_score_one(args) -> int:
     if row is None:
         print(f"listing {args.listing_id} not found", file=sys.stderr)
         return 1
-    scorer = scoring.Scorer(conf.scoring, scoring.load_preferences(conf.scoring.preferences_file))
+    scorer = scoring.Scorer(conf.scoring, scoring.load_preferences(conf.scoring.preferences_file),
+                            home_plz=conf.home_plz)
     if args.show_prompt:
-        print(scoring.listing_to_text(row, db.comparable_stats(conn, row),
-                                      derived.summarise(conn, row, conf.home_plz)))
+        print(_prompt_text(scorer, conn, row))
         return 0
     score = scorer.score_listing(conn, row)
     print(json.dumps(score, indent=2, ensure_ascii=False))
@@ -389,8 +401,10 @@ def cmd_trial(args) -> int:
         print("\n" + "=" * 72)
         print(f"PROMPT THAT WOULD BE SENT FOR {listing_id} (not sent - no API call)")
         print("=" * 72)
-        print(scoring.listing_to_text(row, db.comparable_stats(conn, row),
-                                      derived.summarise(conn, row, conf.home_plz)))
+        scorer = scoring.Scorer(conf.scoring,
+                                scoring.load_preferences(conf.scoring.preferences_file),
+                                home_plz=conf.home_plz)
+        print(_prompt_text(scorer, conn, row))
 
     conn.close()
     return 0 if report.ok else 1
