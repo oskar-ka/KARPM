@@ -10,6 +10,7 @@ import sys
 from pathlib import Path
 
 from . import daemon, db, derived, images, mailer, pipeline, scoring, trial
+from .ai import extract
 from .config import SearchConfig, load_config
 from .http import Blocked, Fetcher
 from .parse.detail import parse_detail_page
@@ -82,6 +83,21 @@ def cmd_scrape(args) -> int:
     print(json.dumps(result, indent=2))
     conn.close()
     return 0
+
+
+def cmd_extract(args) -> int:
+    """Passes 1 and 2 on their own, without scraping or scoring."""
+    conf, conn = _open(args)
+    wanted = ("text", "photos")
+    if args.text_only:
+        wanted = ("text",)
+    elif args.photos_only:
+        wanted = ("photos",)
+    cfg_for = {"text": conf.extract_text, "photos": conf.extract_photos}
+    result = {kind: extract.run_pass(conn, kind, cfg_for[kind]) for kind in wanted}
+    print(json.dumps(result, indent=2))
+    conn.close()
+    return 1 if any(r.get("failed") for r in result.values()) else 0
 
 
 def cmd_score(args) -> int:
@@ -488,9 +504,19 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser(parents=[pace_parent], name="init", help="create the database and register searches").set_defaults(
         func=cmd_init)
     sub.add_parser(parents=[pace_parent], name="scrape", help="fetch listings once").set_defaults(func=cmd_scrape)
+    p_extract = sub.add_parser(
+        parents=[pace_parent], name="extract",
+        help="read descriptions and photos with a model, without scoring")
+    which = p_extract.add_mutually_exclusive_group()
+    which.add_argument("--text-only", action="store_true",
+                       help="pass 1 only: the description")
+    which.add_argument("--photos-only", action="store_true",
+                       help="pass 2 only: the photos")
+    p_extract.set_defaults(func=cmd_extract)
+
     sub.add_parser(parents=[pace_parent], name="score", help="score unscored listings and send instant alerts").set_defaults(
         func=cmd_score)
-    sub.add_parser(parents=[pace_parent], name="run", help="scrape, then score and alert").set_defaults(func=cmd_run)
+    sub.add_parser(parents=[pace_parent], name="run", help="scrape, then run the AI passes and alert").set_defaults(func=cmd_run)
     sub.add_parser(parents=[pace_parent], name="daemon", help="run continuously on the configured schedule").set_defaults(
         func=cmd_daemon)
     sub.add_parser(parents=[pace_parent], name="stats", help="summarise what has been collected").set_defaults(func=cmd_stats)

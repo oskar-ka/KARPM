@@ -238,11 +238,11 @@ def run_forever(conf, conn, poll_seconds: int = 30, config_path: str | None = No
     if stale:
         log.warning("marked %s interrupted command(s) as failed", stale)
 
-    log.info("daemon started - scraping at %s, digest at %s, scoring %s, "
+    log.info("daemon started - scraping at %s, digest at %s, AI passes %s, "
              "heartbeat every %ss",
              conf.schedule.scrape_at or "never",
              conf.schedule.digest_at or "never",
-             "off" if not conf.scoring.enabled
+             "off" if not pipeline.any_ai_enabled(conf)
              else conf.schedule.score_at or "with each scrape",
              heartbeat_seconds(conf))
 
@@ -284,9 +284,12 @@ def run_forever(conf, conn, poll_seconds: int = 30, config_path: str | None = No
         _fire_due(conn, "scrape", scrape_times,
                   lambda: pipeline.run_once(conf, conn, config_path))
         _fire_due(conn, "digest", digest_times, lambda: pipeline.run_digest(conf, conn))
-        if conf.scoring.enabled:
+        # The slot gates all three passes: they are one piece of spending, and
+        # pass 3 scoring on findings pass 1 never made would be the worst of
+        # both. Each still checks its own `enabled` when it runs.
+        if pipeline.any_ai_enabled(conf):
             _fire_due(conn, "score", score_times,
-                      lambda: pipeline.run_scoring_and_alerts(conf, conn, config_path))
+                      lambda: pipeline.run_ai_passes(conf, conn, config_path))
 
         _publish_schedule(conn, conf, scrape_times, digest_times, score_times)
         # Never doze longer than a heartbeat: a short one is someone watching,

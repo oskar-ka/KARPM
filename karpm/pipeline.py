@@ -8,6 +8,7 @@ from pathlib import Path
 from datetime import datetime, timedelta, timezone
 
 from . import db, images, mailer, scoring
+from .ai import extract
 from .config import load_config
 from .http import Blocked, Fetcher
 from .parse import detail
@@ -477,8 +478,12 @@ def run_scrape(conf, conn, fetcher: Fetcher | None = None) -> dict:
     return totals
 
 
-def scoring_switch(config_path):
+def enabled_switch(config_path, section: str):
     """A check that re-reads the config, for asking mid-run whether to carry on.
+
+    Each of the three passes has its own `enabled`, and each is asked about its
+    own - switching the photo pass off should not stop the scoring that is
+    running beside it.
 
     None when there is no file to re-read, which means "carry on" - a caller
     without a config path has nothing newer to learn.
@@ -488,11 +493,32 @@ def scoring_switch(config_path):
 
     def still_enabled() -> bool:
         try:
-            return load_config(config_path).scoring.enabled
+            return getattr(load_config(config_path), section).enabled
         except Exception:       # a half-saved config is not a reason to stop
             return True
 
     return still_enabled
+
+
+def scoring_switch(config_path):
+    return enabled_switch(config_path, "scoring")
+
+
+def run_extraction(conf, conn, config_path=None, client=None) -> dict:
+    """Passes 1 and 2: read the description, then look at the photos.
+
+    Both write findings beside the listing rather than into it. They are worth
+    running even with scoring off - the findings show on the listing page - so
+    neither is gated on `scoring.enabled`.
+    """
+    return {
+        "extract_text": extract.run_pass(
+            conn, "text", conf.extract_text, client,
+            enabled_switch(config_path, "extract_text")),
+        "extract_photos": extract.run_pass(
+            conn, "photos", conf.extract_photos, client,
+            enabled_switch(config_path, "extract_photos")),
+    }
 
 
 def run_scoring_and_alerts(conf, conn, config_path=None) -> dict:
@@ -529,20 +555,39 @@ def run_scoring_and_alerts(conf, conn, config_path=None) -> dict:
     return {"scored": len(scored), "alerts": alerts, "alert_failures": alert_failures}
 
 
-def run_once(conf, conn, config_path=None) -> dict:
+def any_ai_enabled(conf) -> bool:
+    """Whether any of the three passes would do something."""
+    return (conf.extract_text.enabled or conf.extract_photos.enabled
+            or conf.scoring.enabled)
+
+
+def run_ai_passes(conf, conn, config_path=None, client=None) -> dict:
+    """The three passes in order, and the alerts the third one earns.
+
+    This is everything that costs money, which is why the schedule gates it as
+    one thing: pass 3 is the only one you would set a slot for, and running it
+    without the two that feed it would score listings on less than is known
+    about them.
+    """
+    result = run_extraction(conf, conn, config_path, client)
+    result.update(run_scoring_and_alerts(conf, conn, config_path))
+    return result
+
+
+def run_once(conf, conn, config_path=None, client=None) -> dict:
     """One full cycle. This is what a scrape slot, or the button, triggers.
 
-    Scoring rides along unless it has slots of its own - if it does, the point
-    of setting them was to decide when the spending happens.
+    The AI passes ride along unless they have slots of their own - if they do,
+    the point of setting them was to decide when the spending happens. Each
+    pass still checks its own `enabled`, so one of them being off is not a
+    reason to skip the others.
     """
     result = run_scrape(conf, conn)
     if conf.schedule.score_at:
-        log.info("scoring has its own slots (%s), so this run does not score",
+        log.info("the AI passes have their own slots (%s), so this run only scrapes",
                  ", ".join(conf.schedule.score_at))
-    elif not conf.scoring.enabled:
-        log.info("scoring is disabled in the config; this run only scrapes")
     else:
-        result.update(run_scoring_and_alerts(conf, conn, config_path))
+        result.update(run_ai_passes(conf, conn, config_path, client))
     return result
 
 

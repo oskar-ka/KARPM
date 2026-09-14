@@ -14,7 +14,7 @@ from typing import Any, Iterable
 
 log = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 # Bump when a parser change means a stored row would now come out differently
 # and cannot be corrected in place. Every listing written by an older version is
@@ -200,8 +200,8 @@ def set_ignored(conn: sqlite3.Connection, listing_id: str, ignored: bool = True)
 # Everything that is collected rather than configured. `searches` is in here
 # because its rows are rebuilt from config.toml on the next open; the config
 # file itself is never touched by any of this.
-COLLECTED_TABLES = ("listing_history", "images", "scores", "notifications",
-                    "listings", "runs", "commands", "searches")
+COLLECTED_TABLES = ("listing_history", "images", "scores", "extractions",
+                    "notifications", "listings", "runs", "commands", "searches")
 
 # Survives a reset: it is a control you set, not something that was collected.
 # Silently un-pausing would let a scrape start that you had deliberately stopped.
@@ -531,6 +531,145 @@ def unscored_listings(
         """,
         params + [limit],
     ).fetchall()
+
+
+# --- what the extraction passes found ---------------------------------------
+
+
+def _hash_image_set(parts: list[str]) -> str:
+    return hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()[:32]
+
+
+def image_set_hash(conn: sqlite3.Connection, listing_id: str) -> str | None:
+    """A key for "the photos as they now stand", or None if there are none.
+
+    Built from what was actually downloaded, so an ad whose photos failed to
+    fetch does not look like one whose photos were read.
+    """
+    rows = conn.execute(
+        "SELECT position, url FROM images WHERE listing_id = ? AND local_path IS NOT NULL "
+        "ORDER BY position", (listing_id,)).fetchall()
+    if not rows:
+        return None
+    return _hash_image_set([f"{r['position']}:{r['url']}" for r in rows])
+
+
+def image_set_hashes(conn: sqlite3.Connection) -> dict[str, str]:
+    """The same key for every listing at once.
+
+    Deciding which listings the photo pass owes work to means one of these per
+    listing; asked one at a time that is a query each, and the question gets
+    asked on a timer.
+    """
+    parts: dict[str, list[str]] = {}
+    for row in conn.execute(
+            "SELECT listing_id, position, url FROM images WHERE local_path IS NOT NULL "
+            "ORDER BY listing_id, position"):
+        parts.setdefault(row["listing_id"], []).append(f"{row['position']}:{row['url']}")
+    return {listing_id: _hash_image_set(these) for listing_id, these in parts.items()}
+
+
+def save_extraction(conn: sqlite3.Connection, listing_id: str, kind: str, data: dict,
+                    *, provider: str, model: str, prompt_version: str,
+                    source_hash: str | None, input_tokens: int = 0,
+                    output_tokens: int = 0) -> None:
+    """Record what a pass found, replacing whatever it found last time."""
+    conn.execute(
+        """
+        INSERT INTO extractions (listing_id, kind, created_at, provider, model,
+            prompt_version, source_hash, data_json, input_tokens, output_tokens)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(listing_id, kind) DO UPDATE SET
+            created_at=excluded.created_at, provider=excluded.provider,
+            model=excluded.model, prompt_version=excluded.prompt_version,
+            source_hash=excluded.source_hash, data_json=excluded.data_json,
+            input_tokens=excluded.input_tokens, output_tokens=excluded.output_tokens
+        """,
+        (listing_id, kind, utcnow(), provider, model, prompt_version, source_hash,
+         json.dumps(data, ensure_ascii=False), input_tokens, output_tokens),
+    )
+    conn.commit()
+
+
+def get_extraction(conn: sqlite3.Connection, listing_id: str, kind: str) -> dict | None:
+    """What a pass found, or None. The row carries what it was computed from."""
+    row = conn.execute(
+        "SELECT * FROM extractions WHERE listing_id = ? AND kind = ?",
+        (listing_id, kind)).fetchone()
+    if row is None:
+        return None
+    try:
+        data = json.loads(row["data_json"])
+    except ValueError:
+        return None
+    return {**dict(row), "data": data}
+
+
+def extractions_for(conn: sqlite3.Connection, listing_id: str) -> dict:
+    """Every pass's findings for one listing, keyed by kind."""
+    out = {}
+    for kind in ("text", "photos"):
+        found = get_extraction(conn, listing_id, kind)
+        if found:
+            out[kind] = found
+    return out
+
+
+def listings_needing_extraction(conn: sqlite3.Connection, kind: str,
+                                prompt_version: str, limit: int) -> list[sqlite3.Row]:
+    """Active listings whose extraction is missing, stale, or from an older prompt.
+
+    Stale means different things per pass, which is the point of having them
+    separate: the text pass goes stale when the seller edits the ad, the photo
+    pass when the photos change. One can be redone without the other.
+
+    A listing waiting to be re-fetched is left alone either way - its stored text
+    is known to be out of date, so reading it now buys an answer about text we
+    are about to replace.
+    """
+    due = []
+    for row, current in _extraction_candidates(conn, kind):
+        if (row["extraction_id"] is None
+                or row["done_version"] != prompt_version
+                or row["done_hash"] != current):
+            due.append(row)
+        if len(due) >= limit:
+            break
+    return due
+
+
+def _extraction_candidates(conn: sqlite3.Connection, kind: str):
+    """Every listing the pass could look at, with the key it would be read at."""
+    rows = conn.execute(
+        """
+        SELECT l.*, e.id AS extraction_id, e.prompt_version AS done_version,
+               e.source_hash AS done_hash
+        FROM listings l
+        LEFT JOIN extractions e ON e.listing_id = l.id AND e.kind = ?
+        WHERE l.is_active = 1 AND l.needs_refetch = 0
+        ORDER BY l.first_seen_at DESC
+        """,
+        (kind,),
+    ).fetchall()
+    photos = image_set_hashes(conn) if kind == "photos" else {}
+    for row in rows:
+        current = photos.get(row["id"]) if kind == "photos" else row["content_hash"]
+        if kind == "photos" and current is None:
+            continue                    # nothing downloaded, so nothing to look at
+        yield row, current
+
+
+def extraction_backlog(conn: sqlite3.Connection, kind: str, prompt_version: str) -> int:
+    """How many listings that pass still owes a reading, for the status line."""
+    return sum(1 for row, current in _extraction_candidates(conn, kind)
+               if row["extraction_id"] is None
+               or row["done_version"] != prompt_version
+               or row["done_hash"] != current)
+
+
+def _source_hash(conn: sqlite3.Connection, row: sqlite3.Row, kind: str) -> str | None:
+    """What this pass's answer was computed from."""
+    return row["content_hash"] if kind == "text" else image_set_hash(conn, row["id"])
 
 
 def add_score(conn: sqlite3.Connection, listing_id: str, score: dict) -> int:

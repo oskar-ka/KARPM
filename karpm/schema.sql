@@ -107,6 +107,31 @@ CREATE TABLE IF NOT EXISTS images (
 
 CREATE INDEX IF NOT EXISTS idx_images_listing ON images(listing_id, position);
 
+-- What the extraction passes found. One row per listing per kind, replaced
+-- rather than appended: unlike a score, an extraction is a fact about the ad
+-- rather than a verdict worth keeping a history of.
+--
+-- source_hash is what it was computed from - the listing's content_hash for the
+-- text pass, the set of photos for the photo pass. That is what makes it
+-- possible to tell that the seller edited the text without re-reading the
+-- photos, or that new photos arrived without re-reading the text.
+CREATE TABLE IF NOT EXISTS extractions (
+    id            INTEGER PRIMARY KEY,
+    listing_id    TEXT NOT NULL REFERENCES listings(id) ON DELETE CASCADE,
+    kind          TEXT NOT NULL,             -- text | photos
+    created_at    TEXT NOT NULL,
+    provider      TEXT,
+    model         TEXT,
+    prompt_version TEXT,
+    source_hash   TEXT,
+    data_json     TEXT NOT NULL,
+    input_tokens  INTEGER,
+    output_tokens INTEGER,
+    UNIQUE(listing_id, kind)
+);
+
+CREATE INDEX IF NOT EXISTS idx_extractions_kind ON extractions(kind, listing_id);
+
 CREATE TABLE IF NOT EXISTS scores (
     id             INTEGER PRIMARY KEY,
     listing_id     TEXT NOT NULL REFERENCES listings(id) ON DELETE CASCADE,

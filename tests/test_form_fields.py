@@ -15,6 +15,8 @@ from karpm.web import fields
 HOLDERS = {
     "": config.Config, "scrape": config.ScrapeConfig, "trial": config.TrialConfig,
     "images": config.ImageConfig, "scoring": config.ScoringConfig,
+    "extract_text": config.ExtractTextConfig,
+    "extract_photos": config.ExtractPhotosConfig,
     "email": config.EmailConfig, "schedule": config.ScheduleConfig,
     "web": config.WebConfig,
 }

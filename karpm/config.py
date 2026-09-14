@@ -142,8 +142,47 @@ class ImageConfig:
 
 
 @dataclass
+class ExtractTextConfig:
+    """Pass 1: read the seller's prose and pull out what it states.
+
+    A text-only job, so any provider can serve it - including one with no vision
+    at all. It never overwrites a parsed field; what it finds is stored beside
+    the hard facts and marked as inferred.
+    """
+
+    enabled: bool = True
+    provider: str = "anthropic"
+    model: str = "claude-haiku-4-5"
+    effort: str = "medium"
+    prompt_version: str = "v1"
+    max_per_run: int = 200
+
+
+@dataclass
+class ExtractPhotosConfig:
+    """Pass 2: look at the photos, say what they show, and pick the useful ones.
+
+    The shortlist is what pass 3 is shown. Twenty photos of one bike are rarely
+    twenty pieces of evidence - five angles and fifteen near-duplicates is the
+    usual shape - and sending all of them spends the expensive model's attention
+    on the duplicates.
+    """
+
+    enabled: bool = True
+    provider: str = "anthropic"
+    model: str = "claude-haiku-4-5"
+    effort: str = "medium"
+    prompt_version: str = "v1"
+    max_per_run: int = 200
+    # How many photos this pass looks at, and how many it passes on.
+    max_photos_in: int = 12
+    shortlist: int = 4
+
+
+@dataclass
 class ScoringConfig:
     enabled: bool = True
+    provider: str = "anthropic"
     model: str = "claude-opus-5"
     effort: str = "medium"
     prompt_version: str = "v1"
@@ -214,6 +253,8 @@ class Config:
     home_plz: str | None = None
     searches: list[SearchConfig] = field(default_factory=list)
     scrape: ScrapeConfig = field(default_factory=ScrapeConfig)
+    extract_text: ExtractTextConfig = field(default_factory=ExtractTextConfig)
+    extract_photos: ExtractPhotosConfig = field(default_factory=ExtractPhotosConfig)
     trial: TrialConfig = field(default_factory=TrialConfig)
     images: ImageConfig = field(default_factory=ImageConfig)
     scoring: ScoringConfig = field(default_factory=ScoringConfig)
@@ -314,6 +355,9 @@ def load_config(path: Path | str = DEFAULT_CONFIG_PATH) -> Config:
         searches=[_subset(SearchConfig, s, f"searches[{i}]")
                   for i, s in enumerate(raw.get("searches", []))],
         scrape=_subset(ScrapeConfig, raw.get("scrape", {}), "scrape"),
+        extract_text=_subset(ExtractTextConfig, raw.get("extract_text", {}), "extract_text"),
+        extract_photos=_subset(ExtractPhotosConfig, raw.get("extract_photos", {}),
+                               "extract_photos"),
         trial=_subset(TrialConfig, raw.get("trial", {}), "trial"),
         images=_subset(ImageConfig, raw.get("images", {}), "images"),
         scoring=_subset(ScoringConfig, raw.get("scoring", {}), "scoring"),

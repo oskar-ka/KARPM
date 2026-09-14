@@ -13,6 +13,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field as dc_field
 
+from karpm.ai.provider import PROVIDERS
+
 # Kinds map to a form control and to the way the value is written back as TOML:
 #   text          a line of text
 #   int, float    a number; blank means "leave unset" on an optional field
@@ -21,6 +23,11 @@ from dataclasses import dataclass, field as dc_field
 #   lines         a list of strings, one per line in a textarea
 #   numbers       a list of numbers, comma separated
 KINDS = ("text", "int", "float", "bool", "choice", "lines", "numbers")
+
+# Every pass picks its provider from the ones actually implemented, so adding
+# one to karpm.ai.provider puts it on the page without an edit here.
+PROVIDER_CHOICES = tuple(sorted(PROVIDERS))
+EFFORTS = ("low", "medium", "high", "xhigh", "max")
 
 
 @dataclass(frozen=True)
@@ -128,12 +135,55 @@ SECTIONS = (
         Field("max_bytes", "int", "Largest single photo to keep, in bytes."),
     )),
 
-    Section("scoring", "scoring", "", (
-        Field("enabled", "bool", "Off collects and stores listings but never calls the API, "
-                                 "so nothing costs money."),
+    Section("extract_text", "pass 1: the description", (
+        "Reads the seller's prose and writes down what it says: work done, "
+        "faults admitted, what is included. Nothing it finds overwrites a "
+        "parsed field - it is a model's reading of the text, and pass 3 is "
+        "told so."), (
+        Field("enabled", "bool", "Off skips the pass. Scoring then sees the raw "
+                                 "description, as it did before."),
+        Field("provider", "choice", "", choices=PROVIDER_CHOICES),
+        Field("model", "text", "A cheap model is enough here - it is reading, not "
+                               "judging."),
+        Field("effort", "choice", "", choices=EFFORTS),
+        Field("prompt_version", "text", "Bump this to run the pass again over "
+                                        "everything after editing the prompt."),
+        Field("max_per_run", "int", "Most listings this pass handles in one run."),
+    )),
+
+    Section("extract_photos", "pass 2: the photos", (
+        "Looks at the photos, says what they show, and picks the ones worth "
+        "sending on. Twenty photos of one bike are rarely twenty pieces of "
+        "evidence, and the expensive model should not spend its attention on "
+        "the near-duplicates."), (
+        Field("enabled", "bool", "Off sends pass 3 the first few photos in the "
+                                 "seller's order instead of a chosen set."),
+        Field("provider", "choice", "Must be a provider that can see images.",
+              choices=PROVIDER_CHOICES),
         Field("model", "text"),
+        Field("effort", "choice", "", choices=EFFORTS),
+        Field("prompt_version", "text", "Bump this to run the pass again over "
+                                        "everything after editing the prompt."),
+        Field("max_per_run", "int", "Most listings this pass handles in one run."),
+        Field("max_photos_in", "int", "Photos this pass looks at. They are cheap "
+                                      "here and expensive in pass 3, which is the "
+                                      "whole point of the arrangement."),
+        Field("shortlist", "int", "Photos it may pass on. Scoring's own "
+                                  "`max_images` still caps what is sent."),
+    )),
+
+    Section("scoring", "pass 3: the verdict", (
+        "Weighs everything collected - the hard facts, what the two passes "
+        "above found, the shortlisted photos and the comparable prices - "
+        "against your preferences, and gives the listing a score."), (
+        Field("enabled", "bool", "Off leaves listings unscored. Passes 1 and 2 have "
+                                 "their own switches, so turning all three off is "
+                                 "what stops the API costing anything."),
+        Field("provider", "choice", "", choices=PROVIDER_CHOICES),
+        Field("model", "text", "Pass 3, the one that decides. This is where a better "
+                               "model earns its price."),
         Field("effort", "choice", "How hard the model thinks about each listing.",
-              choices=("low", "medium", "high", "xhigh", "max")),
+              choices=EFFORTS),
         Field("prompt_version", "text", "Bump this after editing your preferences to score "
                                         "everything again against them."),
         Field("preferences_file", "text", "", wide=True),

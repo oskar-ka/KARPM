@@ -1,8 +1,16 @@
 """Config loading, and the type checks that stand between a typo and a NULL."""
 
+import dataclasses
+from pathlib import Path
+
 import pytest
 
-from karpm.config import ConfigError, load_config
+try:
+    import tomllib
+except ModuleNotFoundError:             # 3.10
+    import tomli as tomllib
+
+from karpm.config import Config, ConfigError, load_config
 
 # Appended last, because a bare key written after a table belongs to that table.
 SEARCH = """
@@ -26,6 +34,30 @@ def test_example_config_loads():
     assert conf.web.host == "127.0.0.1"
     # The trial pace must actually be quicker than production, or --fast is a lie.
     assert conf.trial.max_delay_s < conf.scrape.max_delay_s
+
+
+# Settings the example deliberately leaves out: headers nobody should be
+# editing, and a backoff that only matters once you are already blocked.
+NOT_IN_THE_EXAMPLE = {("scrape", "user_agent"), ("scrape", "accept_language"),
+                      ("scrape", "block_backoff_s")}
+
+
+def test_example_config_shows_every_setting():
+    """The example is where a setting is explained. One added to config.py but
+    not to it exists only for whoever reads the source."""
+    data = tomllib.loads(Path("config.example.toml").read_text(encoding="utf-8"))
+    blank = Config()
+    for name in Config.__dataclass_fields__:
+        if name == "searches":          # its own [[searches]] blocks, shown twice
+            continue
+        section = getattr(blank, name)
+        if not dataclasses.is_dataclass(section):
+            assert name in data, f"top-level {name} is missing from config.example.toml"
+            continue
+        assert name in data, f"[{name}] is missing from config.example.toml"
+        missing = {key for key in section.__dataclass_fields__
+                   if key not in data[name] and (name, key) not in NOT_IN_THE_EXAMPLE}
+        assert not missing, f"[{name}] in config.example.toml is missing {sorted(missing)}"
 
 
 def test_unknown_keys_are_ignored(tmp_path):

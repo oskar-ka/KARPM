@@ -378,18 +378,23 @@ def test_reset_of_an_idle_queue_reports_nothing_dropped(ready):
 # --- switching scoring off ------------------------------------------------
 
 def test_a_run_with_scoring_off_only_scrapes(ready, monkeypatch, caplog):
+    """Each pass owns its own switch, so this goes through the real pass 3
+    rather than a stand-in: the check that has to hold is the one in it."""
+    from karpm import scoring
     conf, conn = ready
     conf.scoring.enabled = False
+    conf.extract_text.enabled = False
+    conf.extract_photos.enabled = False
     scored = []
     monkeypatch.setattr(pipeline, "run_scrape", lambda *a, **k: {"seen": 1})
-    monkeypatch.setattr(pipeline, "run_scoring_and_alerts",
-                        lambda *a, **k: scored.append(1) or {})
+    monkeypatch.setattr(scoring, "score_pending",
+                        lambda *a, **k: scored.append(1) or [])
 
     with caplog.at_level("INFO"):
         result = pipeline.run_once(conf, conn)
 
     assert scored == []
-    assert result == {"seen": 1}
+    assert result["seen"] == 1 and result["scored"] == 0
     # Silence would leave you wondering whether it had scored or failed to.
     assert "scoring is disabled" in caplog.text
 

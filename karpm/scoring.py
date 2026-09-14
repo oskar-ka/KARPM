@@ -83,7 +83,58 @@ def load_preferences(path: str | Path) -> str:
     return path.read_text(encoding="utf-8").strip()
 
 
-def listing_to_text(row, comparables: dict | None, worked_out: dict | None = None) -> str:
+def extractions_to_text(found: dict) -> list[str]:
+    """What the first two passes found, as lines for the scoring prompt.
+
+    Marked as read rather than as fact: these came from a model reading an ad,
+    and the one weighing them up should know that.
+    """
+    lines = []
+    text = (found.get("text") or {}).get("data") or {}
+    if text:
+        lines.append("\nRead from the description by an earlier pass "
+                     "(a model's reading of the seller's words, not verified):")
+        if text.get("summary"):
+            lines.append(f"  {text['summary']}")
+        for label, key in (("Work the seller says was done", "recent_work"),
+                           ("Faults the seller admits", "known_faults"),
+                           ("Wording worth noting", "red_flags"),
+                           ("Modifications", "modifications"),
+                           ("Included", "included_extras")):
+            items = text.get(key) or []
+            if not items:
+                continue
+            rendered = [
+                f"{i['what']}" + (f" ({i['when']})" if i.get("when") else "")
+                if isinstance(i, dict) else str(i) for i in items
+            ]
+            lines.append(f"  {label}: " + "; ".join(rendered))
+        if text.get("selling_reason"):
+            lines.append(f"  Reason for selling, as stated: {text['selling_reason']}")
+        if text.get("questions_to_ask"):
+            lines.append("  The ad does not say: " + "; ".join(text["questions_to_ask"]))
+
+    photos = (found.get("photos") or {}).get("data") or {}
+    if photos:
+        lines.append("\nSeen in the photographs by an earlier pass:")
+        if photos.get("condition_summary"):
+            lines.append(f"  {photos['condition_summary']}")
+        for label, key in (("Visible problems", "visible_issues"),
+                           ("Visible signs of care", "positives"),
+                           ("Not shown at all", "coverage_gaps")):
+            items = photos.get(key) or []
+            if items:
+                lines.append(f"  {label}: " + "; ".join(str(i) for i in items))
+        if photos.get("photo_quality"):
+            lines.append(f"  On the photographs themselves: {photos['photo_quality']}")
+        if photos.get("shortlist"):
+            lines.append("  The photographs below are the ones it thought most "
+                         "worth a second look.")
+    return lines
+
+
+def listing_to_text(row, comparables: dict | None, worked_out: dict | None = None,
+                    found: dict | None = None) -> str:
     """Render a listing row as compact facts for the prompt."""
     def fmt(label: str, value, suffix: str = "") -> str | None:
         return f"{label}: {value}{suffix}" if value not in (None, "") else None
@@ -160,6 +211,7 @@ def listing_to_text(row, comparables: dict | None, worked_out: dict | None = Non
     if unmapped:
         lines.append("Other listed attributes: " + ", ".join(f"{k}: {v}" for k, v in unmapped.items()))
 
+    lines.extend(extractions_to_text(found or {}))
     lines.append("\nFull description (verbatim, German):\n" + (row["description"] or "(empty)"))
 
     if comparables:
@@ -177,11 +229,22 @@ def listing_to_text(row, comparables: dict | None, worked_out: dict | None = Non
     return "\n".join(lines)
 
 
-def _image_blocks(conn, listing_id: str, max_images: int) -> list[dict]:
+def _image_blocks(conn, listing_id: str, max_images: int,
+                  shortlist: list[int] | None = None) -> list[dict]:
+    """The photographs to show the scoring model.
+
+    The shortlist comes from the photo pass, which has looked at the whole
+    gallery. Without one this falls back to the first few in the seller's order,
+    which is arbitrary - it is whatever they happened to upload first.
+    """
     if max_images <= 0:
         return []
+    rows = db.listing_images(conn, listing_id)
+    if shortlist:
+        by_position = {row["position"]: row for row in rows}
+        rows = [by_position[p] for p in shortlist if p in by_position]
     blocks = []
-    for row in db.listing_images(conn, listing_id)[:max_images]:
+    for row in rows[:max_images]:
         path = Path(row["local_path"]) if row["local_path"] else None
         if not path or not path.exists():
             continue
@@ -207,9 +270,12 @@ class Scorer:
     def score_listing(self, conn, row) -> dict:
         comparables = db.comparable_stats(conn, row)
         worked_out = derived.summarise(conn, row, self.home_plz)
+        found = db.extractions_for(conn, row["id"])
+        shortlist = (found.get("photos", {}).get("data", {}) or {}).get("shortlist")
+
         content: list[dict] = [
-            {"type": "text", "text": listing_to_text(row, comparables, worked_out)},
-            *_image_blocks(conn, row["id"], self.cfg.max_images),
+            {"type": "text", "text": listing_to_text(row, comparables, worked_out, found)},
+            *_image_blocks(conn, row["id"], self.cfg.max_images, shortlist),
         ]
 
         response = self.client.messages.parse(
