@@ -623,6 +623,13 @@ def queue_command(conn: sqlite3.Connection, command: str, params: dict | None = 
     return int(cur.lastrowid)
 
 
+def has_pending_command(conn: sqlite3.Connection) -> bool:
+    """Is anything waiting? Asked once a second by the daemon's sleep, so it is
+    a one-row lookup on an indexed-enough table rather than a full read."""
+    return conn.execute(
+        "SELECT 1 FROM commands WHERE status = 'pending' LIMIT 1").fetchone() is not None
+
+
 def claim_command(conn: sqlite3.Connection) -> sqlite3.Row | None:
     """Take the oldest pending command and mark it running.
 

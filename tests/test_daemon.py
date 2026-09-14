@@ -206,12 +206,12 @@ def test_a_search_the_table_has_never_seen_still_records_its_run(ready):
 
 # --- an empty schedule is a setting, not a mistake ------------------------
 
-def _run_briefly(conf, conn, seconds=2.5):
+def _run_briefly(conf, conn, seconds=2.5, poll_seconds=1):
     """Run the loop on this thread - signals need it - and stop it on a timer."""
     threading.Timer(seconds, lambda: setattr(daemon, "_stop", True)).start()
     daemon._stop = False
     try:
-        daemon.run_forever(conf, conn, poll_seconds=1)
+        daemon.run_forever(conf, conn, poll_seconds=poll_seconds)
     finally:
         daemon._stop = False
 
@@ -631,12 +631,17 @@ def test_a_broken_config_mid_beat_keeps_the_last_interval(ready, tmp_path):
     assert not thread.is_alive(), "a bad config must not take the heartbeat down"
 
 
-def test_the_first_heartbeat_already_knows_the_schedule(ready, caplog):
+def test_the_first_heartbeat_already_knows_the_schedule(ready, caplog, monkeypatch):
     """Published before the beat thread starts - otherwise the first line of a
     fresh start says "next scrape never" and sends you looking for a fault."""
     conf, conn = ready
     conf.schedule.scrape_at = ["07:30"]
     conf.schedule.heartbeat_s = 3600
+    # A named slot fires for real if the clock is past it, and this test ran
+    # against the live site for a minute and a half when the time of day
+    # happened to be 07:31. Nothing here is about what a scrape does.
+    monkeypatch.setattr(pipeline, "run_once", lambda *a, **k: {})
+    monkeypatch.setattr(pipeline, "run_digest", lambda *a, **k: None)
     with caplog.at_level("INFO"):
         _run_briefly(conf, conn, seconds=2.0)
     first = [line for line in caplog.text.splitlines() if "heartbeat - " in line][0]
@@ -684,3 +689,41 @@ def test_the_loop_never_dozes_longer_than_a_heartbeat(ready):
     _run_briefly(conf, conn, seconds=3.0)    # far less than the 30s default poll
 
     assert db.recent_commands(conn, 1)[0]["status"] in ("done", "failed")
+
+
+def test_a_queued_command_wakes_the_daemon_from_a_long_sleep(ready, monkeypatch):
+    """The buttons say "now". Without this the daemon sleeps out its whole poll
+    interval first, so "scrape now" meant "some time in the next half hour".
+
+    The command has to be queued while it is already asleep: one queued before
+    the loop starts is picked up on the first pass whether it wakes or not, so
+    testing that would prove nothing.
+    """
+    conf, conn = ready
+    conf.schedule.heartbeat_s = 3600        # a 30s poll it would otherwise sit out
+    conf.schedule.scrape_at = []
+    conf.schedule.digest_at = []
+    monkeypatch.setattr(pipeline, "run_digest", lambda *a, **k: None)
+
+    def queue_from_elsewhere():
+        other = db.connect(conf.db_path)    # the web process, in effect
+        db.queue_command(other, "digest")
+        other.close()
+
+    threading.Timer(1.5, queue_from_elsewhere).start()
+    # A realistic poll: with poll_seconds=1 the loop comes round every second
+    # anyway and the wake would never be what picked the command up.
+    _run_briefly(conf, conn, seconds=5.0, poll_seconds=30)
+
+    handled = db.recent_commands(conn, 1)[0]
+    assert handled["command"] == "digest"
+    assert handled["status"] in ("done", "failed"), "still pending: it slept through it"
+
+
+def test_has_pending_command_sees_only_what_is_waiting(ready):
+    _, conn = ready
+    assert db.has_pending_command(conn) is False
+    db.queue_command(conn, "digest")
+    assert db.has_pending_command(conn) is True
+    db.claim_command(conn)
+    assert db.has_pending_command(conn) is False, "running is not waiting"

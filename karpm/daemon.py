@@ -293,7 +293,7 @@ def run_forever(conf, conn, poll_seconds: int = 30, config_path: str | None = No
             continue                      # look for the next one straight away
 
         if db.is_paused(conn):
-            _sleep(poll_seconds)
+            _sleep(poll_seconds, conn)
             continue
 
         _fire_due(conn, "scrape", scrape_times,
@@ -306,7 +306,7 @@ def run_forever(conf, conn, poll_seconds: int = 30, config_path: str | None = No
         _publish_schedule(conn, conf, scrape_times, digest_times, score_times)
         # Never doze longer than a heartbeat: a short one is someone watching,
         # and a queued command should not outlast the interval they chose.
-        _sleep(min(poll_seconds, heartbeat_seconds(conf)))
+        _sleep(min(poll_seconds, heartbeat_seconds(conf)), conn)
 
     stop_beating.set()
     beat.join(timeout=5)
@@ -315,9 +315,16 @@ def run_forever(conf, conn, poll_seconds: int = 30, config_path: str | None = No
     log.info("daemon stopped")
 
 
-def _sleep(seconds: int) -> None:
-    """Sleep in one-second steps so a signal is noticed promptly."""
+def _sleep(seconds: int, conn=None) -> None:
+    """Sleep in one-second steps, waking early for a signal or a button.
+
+    Without the `conn` check a queued command waits out the whole interval, so
+    "scrape now" meant "scrape within the next half hour" - which is not what
+    any of those buttons say.
+    """
     for _ in range(seconds):
         if _stop:
             return
         time.sleep(1)
+        if conn is not None and db.has_pending_command(conn):
+            return
