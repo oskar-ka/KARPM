@@ -403,19 +403,11 @@ on the next one rather than at the next restart — and the daemon never sleeps
 longer than a heartbeat, so a short one makes the queued buttons responsive too.
 A short interval is a fine way to watch what it is doing while you set it up.
 
-A queued command wakes the daemon within a second, rather than waiting out the
-poll interval — so **scrape now** means now, and so does the config page's
-**re-read now** button. That one is for when you want the re-reading confirmed:
-the daemon reports which file it read and what it now sees, in the
-queued-commands table.
+A queued command wakes the daemon within a second rather than waiting out the
+poll interval, so **scrape now** means now.
 
-```
-re-read /home/pi/KARPM/config.toml: scraping at ['07:30'], digest at ['08:00'],
-scoring off, heartbeat every 5s, 1 search(es) enabled
-```
-
-That line settles the two-config-files question for good. It refuses when no
-daemon is running, rather than queueing something that would sit pending.
+To see which config file the daemon actually read, look at the `config:` line it
+logs at startup — that is what settles the two-config-files question.
 
 ---
 

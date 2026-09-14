@@ -22,16 +22,8 @@
   <div class="actions">
     <button class="primary">save</button>
     <a class="button" href="{{ url_for('dashboard') }}">cancel</a>
-    <span class="muted">the daemon re-reads this every heartbeat; <em>re-read now</em>
-      asks it to say what it sees, without saving. The port needs a restart of
-      <code>karpm web</code>.</span>
+    <span class="muted">the daemon re-reads this every heartbeat; the port needs
+      a restart of <code>karpm web</code></span>
   </div>
-</form>
-
-<form method="post" action="{{ url_for('control', action='reload') }}" class="reload">
-  <button>re-read now</button>
-  <span class="muted">Asks the daemon to read this file again and report what it
-    sees. It does that every heartbeat anyway; this is for when you want to know
-    it has, and which file it read.</span>
 </form>
 {% endblock %}

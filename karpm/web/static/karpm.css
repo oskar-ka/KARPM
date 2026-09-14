@@ -135,8 +135,3 @@ button.link:hover { color: var(--bad); filter: none; }
 /* A field the ad never filled in. Said, not hidden - two listings have to be
    comparable, and "unknown" is itself worth knowing. */
 .kv dd.absent { color: var(--muted); font-style: italic; }
-
-/* The re-read button sits below the config form, not inside it. */
-form.reload { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap;
-              margin: 4px 0 20px; }
-form.reload .muted { font-size: 12.5px; max-width: 70ch; }

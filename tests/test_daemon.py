@@ -649,34 +649,6 @@ def test_the_first_heartbeat_already_knows_the_schedule(ready, caplog, monkeypat
     assert "next scrape never" not in first
 
 
-def test_the_reload_command_reports_what_it_now_sees(ready, tmp_path):
-    """The point of the button: proof, not just a reload that happens anyway."""
-    conf, conn = ready
-    path = tmp_path / "config.toml"
-    path.write_text(f'db_path = "{conf.db_path}"\n[scoring]\nenabled = false\n'
-                    f'[schedule]\nheartbeat_s = 45\nscrape_at = ["07:30"]\n',
-                    encoding="utf-8")
-    db.queue_command(conn, "reload")
-
-    daemon._handle_pending_command(conf, conn, str(path))
-
-    row = db.recent_commands(conn, 1)[0]
-    assert row["status"] == "done"
-    assert str(path.resolve()) in row["result"]
-    assert "scoring off" in row["result"]
-    assert "heartbeat every 45s" in row["result"]
-    assert "07:30" in row["result"]
-
-
-def test_reload_without_a_config_path_says_so(ready):
-    conf, conn = ready
-    db.queue_command(conn, "reload")
-    daemon._handle_pending_command(conf, conn, None)
-    row = db.recent_commands(conn, 1)[0]
-    assert row["status"] == "failed"
-    assert "not started from a config file" in row["result"]
-
-
 def test_the_loop_never_dozes_longer_than_a_heartbeat(ready):
     """A short heartbeat is someone watching, and a queued command should not
     outlast the interval they chose."""

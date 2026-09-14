@@ -1026,35 +1026,6 @@ def test_the_status_panel_shows_the_scoring_slot(client, app):
     assert "2026-09-15T08:00" in client.get("/status-fragment").get_data(as_text=True)
 
 
-# --- asking the daemon to re-read the config -----------------------------
-
-def test_the_config_page_has_a_re_read_button(client):
-    body = client.get("/config").get_data(as_text=True)
-    assert "re-read now" in body
-    assert 'action="/control/reload"' in body
-
-
-def test_re_read_queues_a_command_when_the_daemon_is_up(client, app):
-    _, config_path, _ = app
-    with opened(config_path) as conn:
-        db.set_state(conn, "heartbeat", db.utcnow())
-
-    assert client.post("/control/reload").status_code == 302
-
-    with opened(config_path) as conn:
-        assert db.recent_commands(conn, 1)[0]["command"] == "reload"
-
-
-def test_re_read_says_so_when_no_daemon_is_running(client, app):
-    """Queueing it would leave it pending until one started, which is not what
-    "now" means to someone pressing the button."""
-    _, config_path, _ = app
-    body = client.post("/control/reload", follow_redirects=True).get_data(as_text=True)
-    assert "the daemon is not running" in body
-    with opened(config_path) as conn:
-        assert db.recent_commands(conn, 5) == []
-
-
 def test_heartbeat_is_the_first_field_in_the_schedule_panel(client):
     from karpm.web import fields
     schedule = fields.section("schedule")

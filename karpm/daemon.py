@@ -13,7 +13,6 @@ import signal
 import threading
 import time
 from datetime import date, datetime, timedelta
-from pathlib import Path
 
 from . import db, pipeline
 from .config import load_config
@@ -83,20 +82,6 @@ def run_command(conf, conn, row, config_path=None) -> tuple[bool, str]:
     if command == "digest":
         provider_id = pipeline.run_digest(conf, conn)
         return True, f"sent: {provider_id}" if provider_id else "nothing new to send"
-    if command == "reload":
-        # The daemon re-reads the config every cycle and every heartbeat anyway.
-        # What this adds is proof: it reports back what it now sees, so a
-        # setting that appears not to have applied can be checked rather than
-        # guessed at.
-        if not config_path:
-            return False, "this daemon was not started from a config file"
-        fresh = load_config(config_path)
-        return True, (f"re-read {Path(config_path).resolve()}: "
-                      f"scraping at {fresh.schedule.scrape_at or 'never'}, "
-                      f"digest at {fresh.schedule.digest_at or 'never'}, "
-                      f"scoring {'on' if fresh.scoring.enabled else 'off'}, "
-                      f"heartbeat every {heartbeat_seconds(fresh)}s, "
-                      f"{len([s for s in fresh.searches if s.enabled])} search(es) enabled")
     if command == "rescore":
         # Checked before anything is deleted. Wiping the verdicts and then
         # finding scoring switched off would destroy what cannot be rebuilt.
