@@ -173,10 +173,23 @@ def create_app(config_path: str = "config.toml") -> Flask:
     def control(action: str):
         conn = connect()
         try:
-            if action in db.COMMANDS:
+            # Checked before the queue: "reload" is a command like any other,
+            # but queueing it with nothing running leaves it pending until a
+            # daemon starts, which is not what "now" means to someone pressing
+            # the button. The others are worth queueing for later.
+            if action == "reload" and not _daemon_alive(conn, conf()):
+                flash("the daemon is not running, so there is nothing to re-read "
+                      "the config. It reads it at startup.", "error")
+            elif action in db.COMMANDS:
                 params = {"all": request.form.get("all") == "1"} if action == "rescore" else {}
                 db.queue_command(conn, action, params)
-                flash(f"{action} queued - the daemon picks it up within a minute", "ok")
+                if action == "reload":
+                    flash("asked the daemon to re-read the config - it does that "
+                          "every heartbeat anyway, so watch the queue below for "
+                          "what it now sees", "ok")
+                else:
+                    flash(f"{action} queued - the daemon picks it up on its next "
+                          "poll", "ok")
             elif action == "reset":
                 # A wipe while the daemon is mid-scrape would be undone by the
                 # rows it is about to write, so refuse rather than half-work.

@@ -380,7 +380,7 @@ No options. It reads run history from the database, so a restart does not
 repeat a slot it already completed. Stops cleanly on `SIGTERM`/`SIGINT`.
 
 It reports a heartbeat on the interval in `schedule.heartbeat_s` (default 120
-seconds) — one line in the terminal and one timestamp in the database, so a
+seconds; anything from 1 second up) — one line in the terminal and one timestamp in the database, so a
 terminal running it does not look hung. The first arrives immediately:
 
 ```
@@ -397,6 +397,23 @@ It is written by its own thread, so it keeps arriving through a scrape that
 holds the daemon for an hour — which is exactly when you want to know it is
 still alive. The web UI waits three missed beats before calling the daemon dead,
 so lengthening the interval does not make a healthy daemon look stopped.
+
+**The config is re-read on every beat**, so changing `heartbeat_s` takes effect
+on the next one rather than at the next restart — and the daemon never sleeps
+longer than a heartbeat, so a short one makes the queued buttons responsive too.
+A short interval is a fine way to watch what it is doing while you set it up.
+
+The config page has a **re-read now** button for when you want that confirmed:
+the daemon reports which file it read and what it now sees, and the answer
+appears in the queued-commands table.
+
+```
+re-read /home/pi/KARPM/config.toml: scraping at ['07:30'], digest at ['08:00'],
+scoring off, heartbeat every 5s, 1 search(es) enabled
+```
+
+That line settles the two-config-files question for good. It refuses when no
+daemon is running, rather than queueing something that would sit pending.
 
 ---
 

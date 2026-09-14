@@ -123,6 +123,12 @@ digest_max_listings = 25
 skip_empty_digest = true
 
 [schedule]
+# Seconds between heartbeats. The daemon writes one and logs one line each time,
+# so this is both "is it alive" and how chatty its terminal is. It re-reads this
+# file every beat, so a change takes effect on the next one. The web UI waits
+# three beats before calling the daemon dead, so that follows this.
+heartbeat_s = 120
+
 # Local time on the Pi. Scrape twice a day, digest once in the morning.
 #
 # An empty list means never. The daemon runs as usual and simply has no slot to
@@ -137,11 +143,6 @@ digest_at = ["08:00"]
 # happens only in these slots.
 score_at = []
 
-# Seconds between heartbeats. The daemon writes one and logs one line each time,
-# so this is both "is it alive" and how chatty its terminal is. The web UI waits
-# three of them before calling the daemon dead, so it follows this rather than
-# needing to be changed to match.
-heartbeat_s = 120
 
 [web]
 # `karpm web` serves the status page, the listings browser and these settings.

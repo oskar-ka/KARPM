@@ -564,16 +564,71 @@ def test_the_interval_comes_from_the_config(ready):
 
 
 @pytest.mark.parametrize("given, expected", [
+    (1, 1),
+    (5, 5),
     (0, daemon.MIN_HEARTBEAT_S),
-    (1, daemon.MIN_HEARTBEAT_S),
+    (-30, daemon.MIN_HEARTBEAT_S),
     (999999, daemon.MAX_HEARTBEAT_S),
 ])
-def test_an_unusable_interval_is_held_to_something_workable(ready, given, expected):
-    """A heartbeat every second writes more than it works; one every day is not
-    a heartbeat."""
+def test_short_intervals_are_allowed(ready, given, expected):
+    """A one-second heartbeat is noisy and is a fine way to watch the daemon
+    while setting it up. Only zero is refused, because it would spin."""
     conf, _ = ready
     conf.schedule.heartbeat_s = given
     assert daemon.heartbeat_seconds(conf) == expected
+
+
+def test_a_five_second_heartbeat_actually_beats_every_five_seconds(ready, caplog):
+    conf, conn = ready
+    stop = threading.Event()
+    thread = threading.Thread(target=daemon._beat, args=(conf.db_path, stop, 1),
+                              daemon=True)
+    with caplog.at_level("INFO"):
+        thread.start()
+        time.sleep(3.2)
+        stop.set()
+        thread.join(timeout=5)
+    beats = caplog.text.count("heartbeat - ")
+    assert 3 <= beats <= 5, f"one a second for three seconds, got {beats}"
+
+
+def test_the_interval_is_re_read_every_beat(ready, tmp_path, caplog):
+    """Changing heartbeat_s takes effect on the next beat, not the next restart -
+    which is what made it look as though short intervals did not work."""
+    conf, conn = ready
+    path = tmp_path / "config.toml"
+    path.write_text(f'db_path = "{conf.db_path}"\n[schedule]\nheartbeat_s = 1\n',
+                    encoding="utf-8")
+
+    stop = threading.Event()
+    thread = threading.Thread(target=daemon._beat,
+                              args=(conf.db_path, stop, 1, str(path)), daemon=True)
+    with caplog.at_level("INFO"):
+        thread.start()
+        time.sleep(1.5)
+        # Slow it right down while it is running.
+        path.write_text(f'db_path = "{conf.db_path}"\n[schedule]\nheartbeat_s = 3600\n',
+                        encoding="utf-8")
+        time.sleep(2.5)
+        stop.set()
+        thread.join(timeout=5)
+
+    beats = caplog.text.count("heartbeat - ")
+    assert beats <= 3, f"it should have slowed to a crawl, but beat {beats} times"
+
+
+def test_a_broken_config_mid_beat_keeps_the_last_interval(ready, tmp_path):
+    conf, conn = ready
+    path = tmp_path / "config.toml"
+    path.write_text("this is not [ toml", encoding="utf-8")
+    stop = threading.Event()
+    thread = threading.Thread(target=daemon._beat,
+                              args=(conf.db_path, stop, 1, str(path)), daemon=True)
+    thread.start()
+    time.sleep(1.5)
+    stop.set()
+    thread.join(timeout=5)
+    assert not thread.is_alive(), "a bad config must not take the heartbeat down"
 
 
 def test_the_first_heartbeat_already_knows_the_schedule(ready, caplog):
@@ -587,3 +642,45 @@ def test_the_first_heartbeat_already_knows_the_schedule(ready, caplog):
     first = [line for line in caplog.text.splitlines() if "heartbeat - " in line][0]
     assert "next scrape 07:30" in first
     assert "next scrape never" not in first
+
+
+def test_the_reload_command_reports_what_it_now_sees(ready, tmp_path):
+    """The point of the button: proof, not just a reload that happens anyway."""
+    conf, conn = ready
+    path = tmp_path / "config.toml"
+    path.write_text(f'db_path = "{conf.db_path}"\n[scoring]\nenabled = false\n'
+                    f'[schedule]\nheartbeat_s = 45\nscrape_at = ["07:30"]\n',
+                    encoding="utf-8")
+    db.queue_command(conn, "reload")
+
+    daemon._handle_pending_command(conf, conn, str(path))
+
+    row = db.recent_commands(conn, 1)[0]
+    assert row["status"] == "done"
+    assert str(path.resolve()) in row["result"]
+    assert "scoring off" in row["result"]
+    assert "heartbeat every 45s" in row["result"]
+    assert "07:30" in row["result"]
+
+
+def test_reload_without_a_config_path_says_so(ready):
+    conf, conn = ready
+    db.queue_command(conn, "reload")
+    daemon._handle_pending_command(conf, conn, None)
+    row = db.recent_commands(conn, 1)[0]
+    assert row["status"] == "failed"
+    assert "not started from a config file" in row["result"]
+
+
+def test_the_loop_never_dozes_longer_than_a_heartbeat(ready):
+    """A short heartbeat is someone watching, and a queued command should not
+    outlast the interval they chose."""
+    conf, conn = ready
+    conf.schedule.heartbeat_s = 2
+    conf.schedule.scrape_at = []
+    conf.schedule.digest_at = []
+    db.queue_command(conn, "digest")
+
+    _run_briefly(conf, conn, seconds=3.0)    # far less than the 30s default poll
+
+    assert db.recent_commands(conn, 1)[0]["status"] in ("done", "failed")

@@ -13,15 +13,17 @@ import signal
 import threading
 import time
 from datetime import date, datetime, timedelta
+from pathlib import Path
 
 from . import db, pipeline
 from .config import load_config
 
 log = logging.getLogger(__name__)
 
-# Never let schedule.heartbeat_s be set so long that the daemon looks dead
-# between beats, or so short that it writes more than it works.
-MIN_HEARTBEAT_S = 10
+# A floor of one second, only because zero would spin. Anything above that is
+# your call: a one-second heartbeat is noisy, and that is a fine way to watch
+# what the daemon is doing while you set it up.
+MIN_HEARTBEAT_S = 1
 MAX_HEARTBEAT_S = 3600
 
 _stop = False
@@ -81,6 +83,20 @@ def run_command(conf, conn, row, config_path=None) -> tuple[bool, str]:
     if command == "digest":
         provider_id = pipeline.run_digest(conf, conn)
         return True, f"sent: {provider_id}" if provider_id else "nothing new to send"
+    if command == "reload":
+        # The daemon re-reads the config every cycle and every heartbeat anyway.
+        # What this adds is proof: it reports back what it now sees, so a
+        # setting that appears not to have applied can be checked rather than
+        # guessed at.
+        if not config_path:
+            return False, "this daemon was not started from a config file"
+        fresh = load_config(config_path)
+        return True, (f"re-read {Path(config_path).resolve()}: "
+                      f"scraping at {fresh.schedule.scrape_at or 'never'}, "
+                      f"digest at {fresh.schedule.digest_at or 'never'}, "
+                      f"scoring {'on' if fresh.scoring.enabled else 'off'}, "
+                      f"heartbeat every {heartbeat_seconds(fresh)}s, "
+                      f"{len([s for s in fresh.searches if s.enabled])} search(es) enabled")
     if command == "rescore":
         # Checked before anything is deleted. Wiping the verdicts and then
         # finding scoring switched off would destroy what cannot be rebuilt.
@@ -131,7 +147,7 @@ def heartbeat_seconds(conf) -> int:
     return max(MIN_HEARTBEAT_S, min(int(conf.schedule.heartbeat_s), MAX_HEARTBEAT_S))
 
 
-def _beat(db_path, stop: threading.Event, every: int) -> None:
+def _beat(db_path, stop: threading.Event, every: int, config_path=None) -> None:
     """Record and announce that the daemon is alive, until asked to stop.
 
     It is a thread rather than a line in the main loop because a scrape or a
@@ -139,6 +155,9 @@ def _beat(db_path, stop: threading.Event, every: int) -> None:
     stopped whenever the daemon was busiest would say it had died exactly when
     it was working hardest. It reads what to report from app_state, which the
     main loop keeps up to date.
+
+    The config is re-read on every beat, so changing heartbeat_s takes effect on
+    the next one rather than at the next restart.
     """
     conn = db.connect(db_path)
     try:
@@ -148,6 +167,13 @@ def _beat(db_path, stop: threading.Event, every: int) -> None:
                 log.info("%s", status_line(conn))
             except Exception:               # a locked database is not fatal here
                 log.debug("heartbeat failed", exc_info=True)
+
+            if config_path:
+                try:
+                    every = heartbeat_seconds(load_config(config_path))
+                except Exception:           # a half-saved file is not a new setting
+                    log.debug("could not re-read %s this beat", config_path,
+                              exc_info=True)
             if stop.wait(every):
                 return
     finally:
@@ -243,7 +269,8 @@ def run_forever(conf, conn, poll_seconds: int = 30, config_path: str | None = No
 
     every = heartbeat_seconds(conf)
     stop_beating = threading.Event()
-    beat = threading.Thread(target=_beat, args=(conf.db_path, stop_beating, every),
+    beat = threading.Thread(target=_beat,
+                            args=(conf.db_path, stop_beating, every, config_path),
                             name="karpm-heartbeat", daemon=True)
     beat.start()
 
@@ -277,7 +304,9 @@ def run_forever(conf, conn, poll_seconds: int = 30, config_path: str | None = No
                       lambda: pipeline.run_scoring_and_alerts(conf, conn, config_path))
 
         _publish_schedule(conn, conf, scrape_times, digest_times, score_times)
-        _sleep(poll_seconds)
+        # Never doze longer than a heartbeat: a short one is someone watching,
+        # and a queued command should not outlast the interval they chose.
+        _sleep(min(poll_seconds, heartbeat_seconds(conf)))
 
     stop_beating.set()
     beat.join(timeout=5)
