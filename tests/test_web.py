@@ -973,11 +973,38 @@ def test_reset_refuses_while_the_daemon_is_working(client, app):
     with opened(config_path) as conn:
         db.queue_command(conn, "scrape")
         db.claim_command(conn)
+        db.set_state(conn, "heartbeat", db.utcnow())    # genuinely at work
 
     body = client.post("/control/reset", follow_redirects=True).get_data(as_text=True)
     assert "nothing was deleted" in body
     with opened(config_path) as conn:
         assert conn.execute("SELECT COUNT(*) n FROM listings").fetchone()["n"] > 0
+
+
+def test_a_command_left_running_by_a_dead_daemon_does_not_block_the_reset(client, app):
+    """Otherwise one crash mid-command locks the button for good."""
+    _, config_path, _ = app
+    with opened(config_path) as conn:
+        db.queue_command(conn, "scrape")
+        db.claim_command(conn)
+        db.set_state(conn, "heartbeat", "2020-01-01T00:00:00+00:00")   # long gone
+
+    body = client.post("/control/reset", follow_redirects=True).get_data(as_text=True)
+    assert "database cleared" in body
+    with opened(config_path) as conn:
+        assert conn.execute("SELECT COUNT(*) n FROM listings").fetchone()["n"] == 0
+
+
+def test_a_stale_command_is_marked_failed_not_left_running(client, app):
+    _, config_path, _ = app
+    with opened(config_path) as conn:
+        db.queue_command(conn, "scrape")
+        db.claim_command(conn)
+        db.set_state(conn, "heartbeat", "2020-01-01T00:00:00+00:00")
+    client.post("/control/reset")
+    # The reset clears the table, so what matters is that it got that far.
+    with opened(config_path) as conn:
+        assert conn.execute("SELECT COUNT(*) n FROM listings").fetchone()["n"] == 0
 
 
 def test_the_reset_button_is_red_and_asks_first(client):

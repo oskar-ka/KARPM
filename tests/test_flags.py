@@ -249,7 +249,7 @@ def test_an_ignored_listing_raises_no_instant_alert(conn, monkeypatch, tmp_path)
                              "description": "d", "price_eur": 5900, "search_name": "gs"})
     conn.commit()
 
-    monkeypatch.setattr(scoring, "score_pending", lambda *_a: [
+    monkeypatch.setattr(scoring, "score_pending", lambda *_a, **_k: [
         {**SCORE, "listing_id": "111", "title": "t", "url": "u",
          "price_eur": 5900, "ignored": True},
         {**SCORE, "listing_id": "222", "title": "t", "url": "u",

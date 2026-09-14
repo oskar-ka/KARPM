@@ -82,8 +82,7 @@ def test_nothing_queued_is_not_an_error(ready):
     assert daemon._handle_pending_command(conf, conn) is False
 
 
-def test_rescore_all_forgets_the_old_verdicts(ready):
-    conf, conn = ready
+def _one_scored_listing(conf, conn):
     pipeline.run_scrape(conf, conn, FakeFetcher())
     db.add_score(conn, "2847612345", {
         "model": "claude-opus-5", "prompt_version": "v1", "content_hash": "abc",
@@ -93,11 +92,34 @@ def test_rescore_all_forgets_the_old_verdicts(ready):
     conn.commit()
     assert conn.execute("SELECT COUNT(*) n FROM scores").fetchone()["n"] == 1
 
+
+def test_rescore_all_forgets_the_old_verdicts(ready, monkeypatch):
+    conf, conn = ready
+    conf.scoring.enabled = True
+    monkeypatch.setattr(pipeline, "run_scoring_and_alerts", lambda *a, **k: {})
+    _one_scored_listing(conf, conn)
+
     db.queue_command(conn, "rescore", {"all": True})
     daemon._handle_pending_command(conf, conn)
-    # scoring.enabled is off, so nothing is scored again - the point is that the
-    # slate was wiped, which is what makes the re-score actually happen.
+
+    # The slate is wiped, which is what makes the re-score actually happen.
     assert conn.execute("SELECT COUNT(*) n FROM scores").fetchone()["n"] == 0
+
+
+def test_rescore_all_deletes_nothing_when_scoring_is_off(ready):
+    """The verdicts would be gone and nothing could rebuild them - so the check
+    happens before the delete, not after it."""
+    conf, conn = ready
+    conf.scoring.enabled = False
+    _one_scored_listing(conf, conn)
+
+    db.queue_command(conn, "rescore", {"all": True})
+    daemon._handle_pending_command(conf, conn)
+
+    assert conn.execute("SELECT COUNT(*) n FROM scores").fetchone()["n"] == 1
+    failed = db.recent_commands(conn, 1)[0]
+    assert failed["status"] == "failed"
+    assert "disabled" in failed["result"], "and it says why, rather than looking done"
 
 
 def test_plain_rescore_keeps_the_old_verdicts(ready):
@@ -351,3 +373,91 @@ def test_reset_reports_the_commands_it_drops(ready):
 def test_reset_of_an_idle_queue_reports_nothing_dropped(ready):
     _, conn = ready
     assert db.reset_everything(conn, None)["pending_commands"] == 0
+
+
+# --- switching scoring off ------------------------------------------------
+
+def test_a_run_with_scoring_off_only_scrapes(ready, monkeypatch, caplog):
+    conf, conn = ready
+    conf.scoring.enabled = False
+    scored = []
+    monkeypatch.setattr(pipeline, "run_scrape", lambda *a, **k: {"seen": 1})
+    monkeypatch.setattr(pipeline, "run_scoring_and_alerts",
+                        lambda *a, **k: scored.append(1) or {})
+
+    with caplog.at_level("INFO"):
+        result = pipeline.run_once(conf, conn)
+
+    assert scored == []
+    assert result == {"seen": 1}
+    # Silence would leave you wondering whether it had scored or failed to.
+    assert "scoring is disabled" in caplog.text
+
+
+def test_run_scoring_says_so_rather_than_starting_a_run(ready, caplog):
+    """It used to open a run row and score nothing, which reads as a failure."""
+    conf, conn = ready
+    conf.scoring.enabled = False
+    with caplog.at_level("INFO"):
+        result = pipeline.run_scoring_and_alerts(conf, conn)
+    assert result["skipped"] == "disabled"
+    assert conn.execute("SELECT COUNT(*) n FROM runs WHERE kind='score'").fetchone()["n"] == 0
+
+
+def test_scoring_stops_mid_run_when_it_is_switched_off(ready, monkeypatch, caplog,
+                                                       tmp_path):
+    """Every listing is an API call, so stopping at the next one rather than at
+    the end of the queue is the difference between one more and two hundred."""
+    from karpm import scoring
+    conf, conn = ready
+    conf.scoring.enabled = True
+    preferences = tmp_path / "preferences.md"
+    preferences.write_text("# Want\n\nA GS.\n", encoding="utf-8")
+    conf.scoring.preferences_file = str(preferences)
+    pipeline.run_scrape(conf, conn, FakeFetcher())
+
+    calls = []
+    switch = {"on": True}
+
+    def fake_score(self, conn_, row):
+        calls.append(row["id"])
+        switch["on"] = False            # someone unticks the box mid-run
+        return {"model": "m", "prompt_version": "v1", "content_hash": row["content_hash"],
+                "overall": 3, "fit": 3, "value": 3, "fair_price_eur": 1,
+                "headline": "h", "reasoning": "r", "pros": [], "cons": [], "red_flags": []}
+
+    monkeypatch.setattr(scoring.Scorer, "__init__", lambda self, *a, **k: None)
+    monkeypatch.setattr(scoring.Scorer, "score_listing", fake_score)
+
+    with caplog.at_level("WARNING"):
+        written = scoring.score_pending(conn, conf.scoring,
+                                        still_enabled=lambda: switch["on"])
+
+    assert len(calls) == 1, "it stopped before the second listing, not after the last"
+    assert len(written) == 1
+    assert "switched off mid-run" in caplog.text
+
+
+def test_the_switch_reads_the_config_file(ready, tmp_path):
+    conf, _ = ready
+    path = tmp_path / "config.toml"
+    path.write_text(f'db_path = "{conf.db_path}"\n[scoring]\nenabled = true\n',
+                    encoding="utf-8")
+    switch = pipeline.scoring_switch(path)
+    assert switch() is True
+
+    path.write_text(f'db_path = "{conf.db_path}"\n[scoring]\nenabled = false\n',
+                    encoding="utf-8")
+    assert switch() is False, "it re-reads, rather than closing over the old value"
+
+
+def test_no_config_path_means_no_switch(ready):
+    """A caller with no file to re-read has nothing newer to learn."""
+    assert pipeline.scoring_switch(None) is None
+
+
+def test_a_broken_config_mid_run_does_not_stop_scoring(ready, tmp_path):
+    """Half a file saved is not a decision to stop."""
+    path = tmp_path / "config.toml"
+    path.write_text("this is not [ toml", encoding="utf-8")
+    assert pipeline.scoring_switch(path)() is True

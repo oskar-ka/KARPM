@@ -71,33 +71,38 @@ def _ran_today(conn, kind: str, slot: datetime) -> bool:
     return last.replace(tzinfo=None) >= slot
 
 
-def run_command(conf, conn, row) -> tuple[bool, str]:
+def run_command(conf, conn, row, config_path=None) -> tuple[bool, str]:
     """Carry out one thing the web UI asked for."""
     params = json.loads(row["params_json"] or "{}")
     command = row["command"]
     if command == "scrape":
-        return True, json.dumps(pipeline.run_once(conf, conn))
+        return True, json.dumps(pipeline.run_once(conf, conn, config_path))
     if command == "digest":
         provider_id = pipeline.run_digest(conf, conn)
         return True, f"sent: {provider_id}" if provider_id else "nothing new to send"
     if command == "rescore":
+        # Checked before anything is deleted. Wiping the verdicts and then
+        # finding scoring switched off would destroy what cannot be rebuilt.
+        if not conf.scoring.enabled:
+            return False, ("scoring is disabled in the config, so nothing was "
+                           "scored and no existing scores were touched")
         if params.get("all"):
             # Forget the old verdicts so every listing is scored again.
             conn.execute("DELETE FROM scores")
             conn.commit()
-        result = pipeline.run_scoring_and_alerts(conf, conn)
+        result = pipeline.run_scoring_and_alerts(conf, conn, config_path)
         return True, json.dumps(result)
     return False, f"unknown command {command!r}"
 
 
-def _handle_pending_command(conf, conn) -> bool:
+def _handle_pending_command(conf, conn, config_path=None) -> bool:
     """Run one queued command, if there is one. True if something ran."""
     row = db.claim_command(conn)
     if row is None:
         return False
     log.info("running queued command %s (#%s)", row["command"], row["id"])
     try:
-        ok, result = run_command(conf, conn, row)
+        ok, result = run_command(conf, conn, row, config_path)
     except Exception as exc:
         log.exception("queued command %s failed", row["command"])
         db.finish_command(conn, row["id"], False, f"{type(exc).__name__}: {exc}")
@@ -184,18 +189,19 @@ def run_forever(conf, conn, poll_seconds: int = 30, config_path: str | None = No
         # Empty: scoring rides along with each scrape instead of having slots.
         score_times = _parse_times(conf.schedule.score_at)
 
-        if _handle_pending_command(conf, conn):
+        if _handle_pending_command(conf, conn, config_path):
             continue                      # look for the next one straight away
 
         if db.is_paused(conn):
             _sleep(poll_seconds)
             continue
 
-        _fire_due(conn, "scrape", scrape_times, lambda: pipeline.run_once(conf, conn))
+        _fire_due(conn, "scrape", scrape_times,
+                  lambda: pipeline.run_once(conf, conn, config_path))
         _fire_due(conn, "digest", digest_times, lambda: pipeline.run_digest(conf, conn))
         if conf.scoring.enabled:
             _fire_due(conn, "score", score_times,
-                      lambda: pipeline.run_scoring_and_alerts(conf, conn))
+                      lambda: pipeline.run_scoring_and_alerts(conf, conn, config_path))
 
         for key, times in (("next_scrape", scrape_times), ("next_digest", digest_times),
                            ("next_score", score_times)):

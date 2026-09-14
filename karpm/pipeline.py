@@ -8,6 +8,7 @@ from pathlib import Path
 from datetime import datetime, timedelta, timezone
 
 from . import db, images, mailer, scoring
+from .config import load_config
 from .http import Blocked, Fetcher
 from .parse import detail
 from .parse.detail import parse_detail_page
@@ -476,10 +477,33 @@ def run_scrape(conf, conn, fetcher: Fetcher | None = None) -> dict:
     return totals
 
 
-def run_scoring_and_alerts(conf, conn) -> dict:
+def scoring_switch(config_path):
+    """A check that re-reads the config, for asking mid-run whether to carry on.
+
+    None when there is no file to re-read, which means "carry on" - a caller
+    without a config path has nothing newer to learn.
+    """
+    if not config_path:
+        return None
+
+    def still_enabled() -> bool:
+        try:
+            return load_config(config_path).scoring.enabled
+        except Exception:       # a half-saved config is not a reason to stop
+            return True
+
+    return still_enabled
+
+
+def run_scoring_and_alerts(conf, conn, config_path=None) -> dict:
     """Score whatever needs scoring, then mail anything that clears the bar."""
+    if not conf.scoring.enabled:
+        log.info("scoring is disabled in the config; skipping it")
+        return {"scored": 0, "alerts": 0, "alert_failures": 0, "skipped": "disabled"}
+
     run_id = db.start_run(conn, "score")
-    scored = scoring.score_pending(conn, conf.scoring, conf.home_plz)
+    scored = scoring.score_pending(conn, conf.scoring, conf.home_plz,
+                                   still_enabled=scoring_switch(config_path))
     alerts = 0
     alert_failures = 0
 
@@ -505,15 +529,20 @@ def run_scoring_and_alerts(conf, conn) -> dict:
     return {"scored": len(scored), "alerts": alerts, "alert_failures": alert_failures}
 
 
-def run_once(conf, conn) -> dict:
+def run_once(conf, conn, config_path=None) -> dict:
     """One full cycle. This is what a scrape slot, or the button, triggers.
 
     Scoring rides along unless it has slots of its own - if it does, the point
     of setting them was to decide when the spending happens.
     """
     result = run_scrape(conf, conn)
-    if conf.scoring.enabled and not conf.schedule.score_at:
-        result.update(run_scoring_and_alerts(conf, conn))
+    if conf.schedule.score_at:
+        log.info("scoring has its own slots (%s), so this run does not score",
+                 ", ".join(conf.schedule.score_at))
+    elif not conf.scoring.enabled:
+        log.info("scoring is disabled in the config; this run only scrapes")
+    else:
+        result.update(run_scoring_and_alerts(conf, conn, config_path))
     return result
 
 

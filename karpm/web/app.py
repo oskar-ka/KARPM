@@ -171,9 +171,16 @@ def create_app(config_path: str = "config.toml") -> Flask:
             elif action == "reset":
                 # A wipe while the daemon is mid-scrape would be undone by the
                 # rows it is about to write, so refuse rather than half-work.
+                # Only while it is genuinely at work, though: a row left
+                # "running" by a daemon that died would block this for ever.
                 busy = conn.execute(
                     "SELECT command FROM commands WHERE status = 'running' "
                     "LIMIT 1").fetchone()
+                if busy and not _daemon_alive(conn):
+                    stale = db.reset_stale_commands(conn)
+                    log.info("cleared %s command(s) left running by a daemon that "
+                             "is no longer alive", stale)
+                    busy = None
                 if busy:
                     flash(f"the daemon is running {busy['command']} - nothing was "
                           "deleted. Try again when it has finished.", "error")
@@ -659,17 +666,23 @@ LIST_COLUMNS = [
 SORTABLE = {name for name, _ in LIST_COLUMNS}
 
 
+def _daemon_alive(conn) -> bool:
+    """Has the daemon checked in recently enough to still be working?"""
+    heartbeat = db.get_state(conn, "heartbeat")
+    if not heartbeat:
+        return False
+    try:
+        last = datetime.fromisoformat(heartbeat)
+    except ValueError:
+        return False
+    if last.tzinfo is None:
+        last = last.replace(tzinfo=timezone.utc)
+    return datetime.now(timezone.utc) - last < HEARTBEAT_STALE_AFTER
+
+
 def _status(conn, conf) -> dict:
     heartbeat = db.get_state(conn, "heartbeat")
-    alive = False
-    if heartbeat:
-        try:
-            last = datetime.fromisoformat(heartbeat)
-            if last.tzinfo is None:
-                last = last.replace(tzinfo=timezone.utc)
-            alive = datetime.now(timezone.utc) - last < HEARTBEAT_STALE_AFTER
-        except ValueError:
-            pass
+    alive = _daemon_alive(conn)
     counts = conn.execute(
         "SELECT COUNT(*) total, SUM(is_active) active, "
         "SUM(CASE WHEN overall IS NULL THEN 1 ELSE 0 END) unscored "

@@ -15,6 +15,8 @@ from .http import Blocked, Fetcher
 from .parse.detail import parse_detail_page
 from .parse.search import parse_search_page
 
+log = logging.getLogger(__name__)
+
 
 # Commands meant for trying things out run at the testing pace unless told
 # otherwise. The unattended ones - the scheduled runs that go on for months -
@@ -36,7 +38,6 @@ def _apply_pace(conf, args):
     fast = _resolve_pace(args)
     conf.scrape = conf.scrape.at_pace(conf.trial if fast else None)
     if fast and args.command not in FAST_BY_DEFAULT:
-        log = logging.getLogger(__name__)
         log.warning("running %s at the testing pace (%.1f-%.1fs between pages) - fine for a "
                     "one-off, but not what you want for an unattended schedule",
                     args.command, conf.scrape.min_delay_s, conf.scrape.max_delay_s)
@@ -54,6 +55,11 @@ def _setup_logging(verbose: bool) -> None:
 
 def _open(args):
     conf = _apply_pace(load_config(args.config), args)
+    # Which file, resolved. Two copies of config.toml in different directories -
+    # one the web UI writes, one this reads - look identical until you see the
+    # paths side by side.
+    log.info("config: %s (scoring %s)", Path(args.config).resolve(),
+             "on" if conf.scoring.enabled else "off")
     conn = db.connect(conf.db_path)
     db.init_db(conn)
     db.sync_searches(conn, conf.searches)
@@ -108,7 +114,7 @@ def cmd_digest(args) -> int:
 
 def cmd_run(args) -> int:
     conf, conn = _open(args)
-    result = pipeline.run_once(conf, conn)
+    result = pipeline.run_once(conf, conn, args.config)
     print(json.dumps(result, indent=2))
     conn.close()
     return 0

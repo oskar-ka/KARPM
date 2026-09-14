@@ -294,6 +294,32 @@ karpm score-one 3422210980 --save            # scores it and stores the result
 
 ---
 
+## Scoring, and turning it off
+
+`scoring.enabled = false` means nothing is sent to the API, and every command
+respects it:
+
+- `run` scrapes and says "scoring is disabled in the config; this run only
+  scrapes" rather than quietly doing half of what its name suggests.
+- The **re-score** buttons refuse, and — importantly — **re-score everything**
+  does not delete the existing verdicts first. Wiping them and then finding
+  scoring switched off would destroy what nothing could rebuild.
+- A run already under way stops at the next listing. The config file is re-read
+  before each one, so unticking the box during a long run stops it after the
+  listing in flight rather than at the end of the queue. Every listing is an API
+  call, so that is the difference between one more and a few hundred more.
+
+Every command logs which config file it read and whether scoring is on:
+
+```
+INFO config: /home/pi/KARPM/config.toml (scoring off)
+```
+
+That line is worth reading when a setting seems not to apply. Two copies of
+`config.toml` in different directories — one the web UI writes, one the CLI
+reads — look identical until the paths are side by side, and the config page
+shows its own full path for the same reason.
+
 ## `run`
 
 One full cycle: `scrape`, then `score`, then instant alerts. This is what the

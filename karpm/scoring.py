@@ -245,9 +245,17 @@ class Scorer:
         }
 
 
-def score_pending(conn, cfg, home_plz: str | None = None) -> list[dict]:
-    """Score every listing that needs it. Returns the scores written."""
+def score_pending(conn, cfg, home_plz: str | None = None,
+                  still_enabled=None) -> list[dict]:
+    """Score every listing that needs it. Returns the scores written.
+
+    `still_enabled` is asked before each listing, so turning scoring off while a
+    run is in progress stops it at the next listing instead of at the end of the
+    queue. Every listing is an API call, so that is the difference between one
+    more and two hundred more.
+    """
     if not cfg.enabled:
+        log.info("scoring is disabled in the config; nothing was scored")
         return []
 
     preferences = load_preferences(cfg.preferences_file)
@@ -262,6 +270,10 @@ def score_pending(conn, cfg, home_plz: str | None = None) -> list[dict]:
     written = []
 
     for row in rows:
+        if still_enabled is not None and not still_enabled():
+            log.warning("scoring was switched off mid-run - stopping after %s of %s "
+                        "listing(s); the rest are still queued", len(written), len(rows))
+            break
         try:
             score = scorer.score_listing(conn, row)
         except anthropic.APIError as exc:

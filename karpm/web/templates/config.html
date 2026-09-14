@@ -2,7 +2,7 @@
 {% from "_fields.html" import row %}
 {% block body %}
 <h1>config</h1>
-<p class="sub">Everything in <code>{{ path.name }}</code> except the searches, which have
+<p class="sub">Everything in <code>{{ path.resolve() }}</code> except the searches, which have
   <a href="{{ url_for('searches') }}">their own page</a>. Saved only if the whole file still
   loads as a config KARPM can use; if it does not, nothing is written. Comments in the file
   are left alone, and the previous version is kept as <code>{{ path.name }}.bak</code>.</p>
