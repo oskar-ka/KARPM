@@ -935,3 +935,65 @@ def test_a_negotiable_price_is_marked(client, app):
         conn.execute("UPDATE listings SET price_kind = 'vb' WHERE id = '2847612345'")
         conn.commit()
     assert "5.900 € VB" in client.get("/listing/2847612345").get_data(as_text=True)
+
+
+# --- clearing the database from the dashboard ----------------------------
+
+def test_reset_clears_the_listings(client, app):
+    _, config_path, _ = app
+    with opened(config_path) as conn:
+        assert conn.execute("SELECT COUNT(*) n FROM listings").fetchone()["n"] > 0
+
+    assert client.post("/control/reset").status_code == 302
+
+    with opened(config_path) as conn:
+        assert conn.execute("SELECT COUNT(*) n FROM listings").fetchone()["n"] == 0
+        assert conn.execute("SELECT COUNT(*) n FROM scores").fetchone()["n"] == 0
+
+
+def test_reset_says_what_it_removed(client, app):
+    """A destructive action that reports nothing leaves you unsure it happened."""
+    body = client.post("/control/reset", follow_redirects=True).get_data(as_text=True)
+    assert "database cleared" in body
+    assert "listing(s)" in body and "photo(s)" in body
+
+
+def test_reset_leaves_the_config_alone(client, app):
+    _, config_path, tmp_path = app
+    before = config_path.read_text(encoding="utf-8")
+    preferences = (tmp_path / "preferences.md").read_text(encoding="utf-8")
+    client.post("/control/reset")
+    assert config_path.read_text(encoding="utf-8") == before
+    assert (tmp_path / "preferences.md").read_text(encoding="utf-8") == preferences
+
+
+def test_reset_refuses_while_the_daemon_is_working(client, app):
+    """A wipe mid-scrape would be undone by the rows it is about to write."""
+    _, config_path, _ = app
+    with opened(config_path) as conn:
+        db.queue_command(conn, "scrape")
+        db.claim_command(conn)
+
+    body = client.post("/control/reset", follow_redirects=True).get_data(as_text=True)
+    assert "nothing was deleted" in body
+    with opened(config_path) as conn:
+        assert conn.execute("SELECT COUNT(*) n FROM listings").fetchone()["n"] > 0
+
+
+def test_the_reset_button_is_red_and_asks_first(client):
+    body = client.get("/").get_data(as_text=True)
+    panel = body[body.index("<h2>start over</h2>"):]
+    assert 'class="danger"' in panel
+    assert "onsubmit=\"return confirm(" in panel
+    assert "no undo" in panel.lower() or "There is no undo" in panel
+
+
+def test_the_status_panel_shows_the_scoring_slot(client, app):
+    _, config_path, _ = app
+    body = client.get("/status-fragment").get_data(as_text=True)
+    assert "next score" in body
+    assert "with each scrape" in body, "no slots set, so scoring rides along"
+
+    with opened(config_path) as conn:
+        db.set_state(conn, "next_score", "2026-09-15T08:00:00")
+    assert "2026-09-15T08:00" in client.get("/status-fragment").get_data(as_text=True)

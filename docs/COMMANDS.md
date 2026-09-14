@@ -332,8 +332,19 @@ failed send leaves those listings queued for the next attempt.
 
 ## `daemon`
 
-Run continuously on the schedule in `[schedule]`, scraping and mailing at the
-configured local times. This is what the systemd unit in `deploy/` starts.
+Run continuously on the schedule in `[schedule]`, scraping, scoring and mailing
+at the configured local times. This is what the systemd unit in `deploy/`
+starts.
+
+**An empty list of times means never, and is not an error.** With
+`scrape_at = []` the daemon runs exactly as usual — heartbeat, command queue,
+pause — and simply has no slot to fire, which is how you drive it from the web
+UI alone. The status panel reads "not scheduled".
+
+`score_at` works the other way round: **empty means scoring rides along with
+each scrape**, which is what you want when the point is to hear about a good
+listing quickly. Setting times separates the two, so scraping keeps its own
+schedule and the API spending happens only in those slots.
 
 ```bash
 karpm daemon
@@ -377,6 +388,16 @@ or after whatever it is currently doing finishes.
 | `score new listings` | Scoring for anything unscored. **Costs money.** |
 | `re-score everything` | The same, after deleting every existing score. Asks first, and costs a great deal more. |
 | `pause schedule` | Stops the timed slots firing. Queued commands still run, so the buttons keep working. |
+| `clear the database` | Deletes every listing, its history, scores and downloaded photos, and asks first. Red, and there is no undo. |
+
+**`clear the database`** puts you back at a fresh install: every listing, its
+price history, scores, run log and downloaded photos are gone. `config.toml` and
+`preferences.md` are not touched, and your searches are registered again from
+the config on the next open, so the thing starts collecting from scratch rather
+than from nothing. A pause you had set survives — silently un-pausing would let
+a scrape start that you had deliberately stopped. It refuses while the daemon is
+mid-command, since a wipe would be undone by the rows that command is about to
+write.
 
 Each listing's own page has three more: **ignore** keeps a listing out of every
 email without deleting it — for one that scored well but is not for you —

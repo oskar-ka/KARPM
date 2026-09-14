@@ -128,6 +128,28 @@ def _beat(db_path, stop: threading.Event, every: int = HEARTBEAT_EVERY_S) -> Non
         conn.close()
 
 
+def _fire_due(conn, kind: str, times: list[tuple[int, int]], action) -> bool:
+    """Run `action` if a slot for today has passed and has not been run yet.
+
+    An empty `times` is not an error and not a special case: there is simply no
+    slot to be due, so the daemon carries on doing everything else.
+    """
+    today = date.today()
+    now = datetime.now()
+    for hour, minute in times:
+        slot = datetime.combine(today, datetime.min.time()).replace(hour=hour, minute=minute)
+        if now < slot or _ran_today(conn, kind, slot):
+            continue
+        log.info("%s slot %02d:%02d", kind, hour, minute)
+        try:
+            result = action()
+            log.info("%s finished: %s", kind, result)
+        except Exception:
+            log.exception("%s run failed", kind)
+        return True
+    return False
+
+
 def run_forever(conf, conn, poll_seconds: int = 30, config_path: str | None = None) -> None:
     signal.signal(signal.SIGTERM, _handle_signal)
     signal.signal(signal.SIGINT, _handle_signal)
@@ -137,8 +159,10 @@ def run_forever(conf, conn, poll_seconds: int = 30, config_path: str | None = No
     if stale:
         log.warning("marked %s interrupted command(s) as failed", stale)
 
-    log.info("daemon started - scraping at %s, digest at %s",
-             conf.schedule.scrape_at, conf.schedule.digest_at)
+    log.info("daemon started - scraping at %s, digest at %s, scoring %s",
+             conf.schedule.scrape_at or "never",
+             conf.schedule.digest_at or "never",
+             conf.schedule.score_at or "with each scrape")
 
     stop_beating = threading.Event()
     beat = threading.Thread(target=_beat, args=(conf.db_path, stop_beating),
@@ -157,6 +181,8 @@ def run_forever(conf, conn, poll_seconds: int = 30, config_path: str | None = No
 
         scrape_times = _parse_times(conf.schedule.scrape_at)
         digest_times = _parse_times(conf.schedule.digest_at)
+        # Empty: scoring rides along with each scrape instead of having slots.
+        score_times = _parse_times(conf.schedule.score_at)
 
         if _handle_pending_command(conf, conn):
             continue                      # look for the next one straight away
@@ -165,31 +191,14 @@ def run_forever(conf, conn, poll_seconds: int = 30, config_path: str | None = No
             _sleep(poll_seconds)
             continue
 
-        now = datetime.now()
-        today = date.today()
+        _fire_due(conn, "scrape", scrape_times, lambda: pipeline.run_once(conf, conn))
+        _fire_due(conn, "digest", digest_times, lambda: pipeline.run_digest(conf, conn))
+        if conf.scoring.enabled:
+            _fire_due(conn, "score", score_times,
+                      lambda: pipeline.run_scoring_and_alerts(conf, conn))
 
-        for hour, minute in scrape_times:
-            slot = datetime.combine(today, datetime.min.time()).replace(hour=hour, minute=minute)
-            if now >= slot and not _ran_today(conn, "scrape", slot):
-                log.info("scrape slot %02d:%02d", hour, minute)
-                try:
-                    result = pipeline.run_once(conf, conn)
-                    log.info("scrape finished: %s", result)
-                except Exception:
-                    log.exception("scrape run failed")
-                break
-
-        for hour, minute in digest_times:
-            slot = datetime.combine(today, datetime.min.time()).replace(hour=hour, minute=minute)
-            if now >= slot and not _ran_today(conn, "digest", slot):
-                log.info("digest slot %02d:%02d", hour, minute)
-                try:
-                    pipeline.run_digest(conf, conn)
-                except Exception:
-                    log.exception("digest failed")
-                break
-
-        for key, times in (("next_scrape", scrape_times), ("next_digest", digest_times)):
+        for key, times in (("next_scrape", scrape_times), ("next_digest", digest_times),
+                           ("next_score", score_times)):
             when = _next_fire(times, datetime.now())
             db.set_state(conn, key, when.isoformat() if when else "not scheduled")
         _sleep(poll_seconds)

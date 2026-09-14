@@ -63,7 +63,10 @@ input.wide { width: 100%; min-width: 22ch; }
 textarea { width: 100%; font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 13px; }
 button { cursor: pointer; background: var(--accent); color: #fff; border-color: transparent; }
 button:hover { filter: brightness(1.1); }
-button.danger { background: var(--bad); }
+/* Amber spends money and can be undone; red destroys data and cannot. Two
+   buttons in the same red told you nothing about which was which. */
+button.costly { background: var(--warn); }
+button.danger { background: var(--bad); box-shadow: inset 0 0 0 2px rgba(0,0,0,.25); }
 form.inline { display: inline; }
 
 .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; }

@@ -318,6 +318,18 @@ syntax highlighting.
 For the common questions there is no need to open the database at all —
 `karpm stats` and `karpm top --min-score 4` already answer them.
 
+## Starting over
+
+`db.reset_everything()` — the web UI's **clear the database** button — empties
+every table in `db.COLLECTED_TABLES` and the image directory with it, then
+VACUUMs. What survives is what was configured rather than collected:
+`config.toml`, `preferences.md`, and the one `app_state` key in `db.KEEP_STATE`,
+`paused`, because silently un-pausing would let a scrape start that you had
+deliberately stopped.
+
+The photos go too. Leaving them would strand a directory of files that nothing
+references and every one of which would be downloaded again.
+
 ## Durability
 
 `connect()` sets `journal_mode=WAL` and `synchronous=NORMAL` — a good trade on

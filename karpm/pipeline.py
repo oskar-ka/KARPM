@@ -506,9 +506,13 @@ def run_scoring_and_alerts(conf, conn) -> dict:
 
 
 def run_once(conf, conn) -> dict:
-    """One full cycle. This is what the schedule triggers."""
+    """One full cycle. This is what a scrape slot, or the button, triggers.
+
+    Scoring rides along unless it has slots of its own - if it does, the point
+    of setting them was to decide when the spending happens.
+    """
     result = run_scrape(conf, conn)
-    if conf.scoring.enabled:
+    if conf.scoring.enabled and not conf.schedule.score_at:
         result.update(run_scoring_and_alerts(conf, conn))
     return result
 

@@ -15,7 +15,7 @@
   <form method="post" action="{{ url_for('control', action='rescore') }}" class="inline"
         onsubmit="return confirm('Re-score every listing? This spends Claude API credits.')">
     <input type="hidden" name="all" value="1">
-    <button class="danger">re-score everything</button></form>
+    <button class="costly">re-score everything</button></form>
   {% if paused %}
     <form method="post" action="{{ url_for('control', action='resume') }}" class="inline">
       <button>resume schedule</button></form>
@@ -23,6 +23,16 @@
     <form method="post" action="{{ url_for('control', action='pause') }}" class="inline">
       <button>pause schedule</button></form>
   {% endif %}
+</div>
+
+<div class="panel">
+  <h2>start over</h2>
+  <form method="post" action="{{ url_for('control', action='reset') }}" class="inline"
+        onsubmit="return confirm('Delete everything?\n\n{{ counts.total or 0 }} listing(s), their price history, scores and downloaded photos will be removed for good.\n\nYour config, searches and preferences.md are not touched.');">
+    <button class="danger" id="reset">clear the database</button></form>
+  <span class="muted">Back to a fresh install. Your searches are registered again
+    from <code>config.toml</code>, and everything collected since is gone -
+    including the photos on disk. There is no undo.</span>
 </div>
 
 <div class="cols">

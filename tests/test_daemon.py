@@ -1,7 +1,9 @@
 """The daemon's side of the web UI: the command queue, pause, and the heartbeat."""
 
+import pathlib
 import threading
 import time
+from datetime import datetime
 
 import pytest
 
@@ -178,3 +180,156 @@ def test_a_search_the_table_has_never_seen_still_records_its_run(ready):
     assert row is not None, "the scrape should have registered the search"
     assert row["last_run_at"], "and recorded when it ran"
     assert "seen" in row["last_status"]
+
+
+# --- an empty schedule is a setting, not a mistake ------------------------
+
+def _run_briefly(conf, conn, seconds=2.5):
+    """Run the loop on this thread - signals need it - and stop it on a timer."""
+    threading.Timer(seconds, lambda: setattr(daemon, "_stop", True)).start()
+    daemon._stop = False
+    try:
+        daemon.run_forever(conf, conn, poll_seconds=1)
+    finally:
+        daemon._stop = False
+
+
+def test_no_scrape_slots_is_not_an_error(ready):
+    """It means "never": the daemon runs as usual with nothing to fire, which
+    is how you drive it from the web UI alone."""
+    conf, conn = ready
+    conf.schedule.scrape_at = []
+    conf.schedule.digest_at = []
+
+    _run_briefly(conf, conn)            # must not raise
+
+    assert db.get_state(conn, "next_scrape") == "not scheduled"
+    assert conn.execute("SELECT COUNT(*) n FROM runs").fetchone()["n"] == 0
+    assert db.get_state(conn, "heartbeat"), "still alive, just idle"
+
+
+def test_queued_commands_still_run_with_no_schedule(ready):
+    """The whole point of an empty schedule: the buttons still work."""
+    conf, conn = ready
+    conf.schedule.scrape_at = []
+    conf.schedule.digest_at = []
+    db.queue_command(conn, "digest")
+
+    _run_briefly(conf, conn)
+
+    assert db.recent_commands(conn, 1)[0]["status"] in ("done", "failed")
+
+
+def test_next_fire_of_nothing_is_nothing():
+    assert daemon._next_fire([], datetime.now()) is None
+
+
+# --- scoring slots --------------------------------------------------------
+
+def test_without_score_slots_a_scrape_scores_too(ready, monkeypatch):
+    """The default: you want to hear about a good listing quickly."""
+    conf, conn = ready
+    conf.scoring.enabled = True
+    conf.schedule.score_at = []
+    scored = []
+    monkeypatch.setattr(pipeline, "run_scrape", lambda *a, **k: {})
+    monkeypatch.setattr(pipeline, "run_scoring_and_alerts",
+                        lambda *a, **k: scored.append(1) or {})
+
+    pipeline.run_once(conf, conn)
+    assert scored == [1]
+
+
+def test_with_score_slots_a_scrape_leaves_scoring_alone(ready, monkeypatch):
+    """Setting times was a decision about when the money is spent."""
+    conf, conn = ready
+    conf.scoring.enabled = True
+    conf.schedule.score_at = ["08:00"]
+    scored = []
+    monkeypatch.setattr(pipeline, "run_scrape", lambda *a, **k: {})
+    monkeypatch.setattr(pipeline, "run_scoring_and_alerts",
+                        lambda *a, **k: scored.append(1) or {})
+
+    pipeline.run_once(conf, conn)
+    assert scored == []
+
+
+def test_a_score_slot_that_has_passed_fires(ready, monkeypatch):
+    conf, conn = ready
+    scored = []
+    monkeypatch.setattr(pipeline, "run_scoring_and_alerts",
+                        lambda *a, **k: scored.append(1) or {})
+    fired = daemon._fire_due(conn, "score", [(0, 1)],
+                             lambda: pipeline.run_scoring_and_alerts(conf, conn))
+    assert fired is True and scored == [1]
+
+
+def test_a_slot_already_run_today_does_not_fire_again(ready):
+    conf, conn = ready
+    calls = []
+    daemon._fire_due(conn, "score", [(0, 1)], lambda: calls.append(1) or {})
+    # _fire_due records nothing itself; the run row is what marks it done.
+    run_id = db.start_run(conn, "score")
+    db.finish_run(conn, run_id, True)
+    daemon._fire_due(conn, "score", [(0, 1)], lambda: calls.append(1) or {})
+    assert len(calls) == 1
+
+
+def test_no_score_slots_means_nothing_is_due(ready):
+    _, conn = ready
+    assert daemon._fire_due(conn, "score", [], lambda: 1 / 0) is False
+
+
+# --- clearing the database ------------------------------------------------
+
+def test_reset_removes_everything_collected(ready, tmp_path):
+    conf, conn = ready
+    pipeline.run_scrape(conf, conn, FakeFetcher())
+    assert conn.execute("SELECT COUNT(*) n FROM listings").fetchone()["n"] > 0
+
+    removed = db.reset_everything(conn, conf.images.dir)
+
+    assert removed["listings"] > 0
+    for table in db.COLLECTED_TABLES:
+        assert conn.execute(f"SELECT COUNT(*) n FROM {table}").fetchone()["n"] == 0, table
+
+
+def test_reset_keeps_the_pause_you_set(ready):
+    """Silently un-pausing would let a scrape start that you had stopped."""
+    _, conn = ready
+    db.set_state(conn, "paused", "1")
+    db.set_state(conn, "heartbeat", db.utcnow())
+    db.reset_everything(conn, None)
+    assert db.is_paused(conn) is True
+    assert db.get_state(conn, "heartbeat") is None
+
+
+def test_reset_deletes_the_photos_too(ready, tmp_path):
+    """Otherwise a fresh start leaves orphans that all get fetched again."""
+    conf, conn = ready
+    folder = pathlib.Path(conf.images.dir) / "2847612345"
+    folder.mkdir(parents=True)
+    (folder / "0.jpg").write_bytes(b"\xff\xd8\xff")
+    (folder / "ad.txt").write_text("https://x/1", encoding="utf-8")
+
+    removed = db.reset_everything(conn, conf.images.dir)
+
+    assert removed["images_deleted"] == 2
+    assert list(pathlib.Path(conf.images.dir).iterdir()) == []
+
+
+def test_reset_survives_a_missing_image_directory(ready):
+    conf, conn = ready
+    assert db.reset_everything(conn, "/nowhere/at/all")["images_deleted"] == 0
+    assert db.reset_everything(conn, None)["images_deleted"] == 0
+
+
+def test_the_database_still_works_after_a_reset(ready):
+    """It has to be usable, not just empty."""
+    conf, conn = ready
+    pipeline.run_scrape(conf, conn, FakeFetcher())
+    db.reset_everything(conn, conf.images.dir)
+
+    db.sync_searches(conn, conf.searches)
+    pipeline.run_scrape(conf, conn, FakeFetcher())
+    assert conn.execute("SELECT COUNT(*) n FROM listings").fetchone()["n"] > 0

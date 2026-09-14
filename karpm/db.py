@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import shutil
 import sqlite3
 from datetime import datetime, timezone
 from importlib import resources
@@ -194,6 +195,62 @@ def set_ignored(conn: sqlite3.Connection, listing_id: str, ignored: bool = True)
     conn.execute("UPDATE listings SET ignored = ? WHERE id = ?",
                  (1 if ignored else 0, listing_id))
     conn.commit()
+
+
+# Everything that is collected rather than configured. `searches` is in here
+# because its rows are rebuilt from config.toml on the next open; the config
+# file itself is never touched by any of this.
+COLLECTED_TABLES = ("listing_history", "images", "scores", "notifications",
+                    "listings", "runs", "commands", "searches")
+
+# Survives a reset: it is a control you set, not something that was collected.
+# Silently un-pausing would let a scrape start that you had deliberately stopped.
+KEEP_STATE = ("paused",)
+
+
+def reset_everything(conn: sqlite3.Connection, images_dir: str | Path | None = None) -> dict:
+    """Empty the database, and the image directory with it.
+
+    Back to a fresh install: no listings, no history, no scores, no run log.
+    The config file and preferences.md are not touched, and the searches in them
+    are registered again on the next open.
+
+    Returns what was removed, because a destructive action that reports nothing
+    leaves you wondering whether it happened.
+    """
+    counts = {}
+    for table in COLLECTED_TABLES:
+        counts[table] = conn.execute(f"SELECT COUNT(*) n FROM {table}").fetchone()["n"]
+        conn.execute(f"DELETE FROM {table}")
+    kept = "', '".join(KEEP_STATE)
+    conn.execute(f"DELETE FROM app_state WHERE key NOT IN ('{kept}')")
+    conn.commit()
+    conn.execute("VACUUM")              # give the space back; this is a fresh start
+
+    counts["images_deleted"] = _empty_image_dir(images_dir)
+    return counts
+
+
+def _empty_image_dir(images_dir: str | Path | None) -> int:
+    """Remove downloaded photos. Without this a reset leaves orphans on disk
+    that nothing references and every one of which would be fetched again."""
+    if not images_dir:
+        return 0
+    root = Path(images_dir)
+    if not root.is_dir():
+        return 0
+    removed = 0
+    for child in root.iterdir():
+        try:
+            if child.is_dir():
+                removed += sum(1 for f in child.rglob("*") if f.is_file())
+                shutil.rmtree(child)
+            else:
+                child.unlink()
+                removed += 1
+        except OSError as exc:
+            log.warning("could not remove %s: %s", child, exc)
+    return removed
 
 
 def pending_counts(conn: sqlite3.Connection) -> dict:

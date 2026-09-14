@@ -163,10 +163,18 @@ SECTIONS = (
         Field("skip_empty_digest", "bool", "Send nothing rather than an empty digest."),
     )),
 
-    Section("schedule", "schedule", "", (
-        Field("scrape_at", "lines", "Local times on the Pi, HH:MM, one per line.",
-              placeholder="07:30"),
+    Section("schedule", "schedule", (
+        "Local times on the Pi, HH:MM, one per line. Empty means never: the "
+        "daemon runs as usual and simply has no slot to fire, which is how you "
+        "drive it from this page alone."), (
+        Field("scrape_at", "lines", "", placeholder="07:30"),
         Field("digest_at", "lines", "", placeholder="08:00"),
+        Field("score_at", "lines",
+              "Leave empty to score as part of each scrape - which is what you "
+              "want when the point is to hear about a good listing quickly. "
+              "Giving times separates the two, so the scraping keeps its own "
+              "schedule and the API spending happens only in these slots.",
+              placeholder="08:00"),
     )),
 
     Section("web", "web", "", (

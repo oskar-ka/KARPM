@@ -124,8 +124,18 @@ skip_empty_digest = true
 
 [schedule]
 # Local time on the Pi. Scrape twice a day, digest once in the morning.
+#
+# An empty list means never. The daemon runs as usual and simply has no slot to
+# fire, so `scrape_at = []` leaves it waiting for whatever you queue from the
+# web UI - it is not an error and nothing breaks.
 scrape_at = ["07:30", "19:30"]
 digest_at = ["08:00"]
+
+# When to score. Empty means scoring rides along with each scrape, which is what
+# you want when the point is to hear about a good listing quickly. Giving times
+# separates the two: the scrape keeps its own schedule, and the API spending
+# happens only in these slots.
+score_at = []
 
 [web]
 # `karpm web` serves the status page, the listings browser and these settings.

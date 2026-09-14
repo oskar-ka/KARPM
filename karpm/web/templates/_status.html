@@ -12,6 +12,7 @@
     {% endif %}
     <dt>next scrape</dt><dd>{{ next_scrape or '-' }}</dd>
     <dt>next digest</dt><dd>{{ next_digest or '-' }}</dd>
+    <dt>next score</dt><dd>{{ next_score or 'with each scrape' }}</dd>
     <dt>listings</dt><dd>{{ counts.total or 0 }} ({{ counts.active or 0 }} active,
       {{ counts.unscored or 0 }} unscored)</dd>
     {% if pending.refetch or pending.rescore or pending.ignored %}

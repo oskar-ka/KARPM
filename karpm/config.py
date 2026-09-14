@@ -187,9 +187,17 @@ class WebConfig:
 
 @dataclass
 class ScheduleConfig:
-    # Local times (HH:MM) at which the daemon scrapes and mails.
+    """Local times (HH:MM) at which the daemon acts. An empty list means never:
+    the daemon runs as usual and simply has no slot to fire, which is how you
+    drive it from the web UI alone."""
+
     scrape_at: list[str] = field(default_factory=lambda: ["07:30", "19:30"])
     digest_at: list[str] = field(default_factory=lambda: ["08:00"])
+    # Empty means score as part of each scrape, which is what you want when the
+    # point is to hear about a good listing quickly. Giving times separates the
+    # two: the scrape still runs on its own schedule, and the API spending
+    # happens only in these slots.
+    score_at: list[str] = field(default_factory=list)
 
 
 @dataclass

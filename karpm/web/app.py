@@ -168,6 +168,21 @@ def create_app(config_path: str = "config.toml") -> Flask:
                 params = {"all": request.form.get("all") == "1"} if action == "rescore" else {}
                 db.queue_command(conn, action, params)
                 flash(f"{action} queued - the daemon picks it up within a minute", "ok")
+            elif action == "reset":
+                # A wipe while the daemon is mid-scrape would be undone by the
+                # rows it is about to write, so refuse rather than half-work.
+                busy = conn.execute(
+                    "SELECT command FROM commands WHERE status = 'running' "
+                    "LIMIT 1").fetchone()
+                if busy:
+                    flash(f"the daemon is running {busy['command']} - nothing was "
+                          "deleted. Try again when it has finished.", "error")
+                else:
+                    removed = db.reset_everything(conn, conf().images.dir)
+                    flash("database cleared: "
+                          f"{removed['listings']} listing(s), {removed['scores']} score(s), "
+                          f"{removed['images_deleted']} photo(s). Your config and "
+                          "preferences are untouched.", "ok")
             elif action in ("pause", "resume"):
                 db.set_state(conn, "paused", "1" if action == "pause" else "0")
                 flash("schedule paused" if action == "pause" else "schedule resumed", "ok")
@@ -664,6 +679,7 @@ def _status(conn, conf) -> dict:
         "paused": db.is_paused(conn),
         "next_scrape": db.get_state(conn, "next_scrape"),
         "next_digest": db.get_state(conn, "next_digest"),
+        "next_score": db.get_state(conn, "next_score"),
         "counts": counts,
         "runs": conn.execute("SELECT * FROM runs ORDER BY id DESC LIMIT 8").fetchall(),
         "commands": db.recent_commands(conn, 8),
