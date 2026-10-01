@@ -6,6 +6,7 @@ a pass nobody could put another model behind.
 """
 
 from pathlib import Path
+import re
 
 import pytest
 
@@ -158,14 +159,49 @@ def test_findings_are_stored_beside_the_listing_not_in_it(conn):
 def test_a_second_run_replaces_rather_than_piles_up(conn):
     listing(conn)
     cfg = Config().extract_text
-    for _ in range(2):
-        cfg.prompt_version = f"v{_ + 1}"
+    versions = []
+    for model in ("claude-haiku-4-5", "claude-sonnet-5"):
+        cfg.model = model
         extract.run_pass(conn, "text", cfg, FakeProvider({"text": TEXT_ANSWER}))
+        versions.append(passes.version("text", cfg))
 
     rows = conn.execute("SELECT * FROM extractions WHERE listing_id = '111'").fetchall()
-    # The stored version carries the prompt's own hash after the configured
-    # one, which is what makes editing a prompt re-read everything.
-    assert len(rows) == 1 and rows[0]["prompt_version"].startswith("v2+")
+    # The stored version is a hash of the prompt and the settings, which is
+    # what makes pointing the pass at another model re-read everything.
+    assert versions[0] != versions[1]
+    assert len(rows) == 1 and rows[0]["prompt_version"] == versions[1]
+
+
+def test_the_version_is_eight_hex_characters_of_prompt_and_settings():
+    """Short enough to read on the page, stable for the same input, and
+    changed by anything that would change the answer - and by nothing else."""
+    cfg = Config().extract_text
+    first = passes.version("text", cfg, "Read it.")
+    assert re.fullmatch(r"[0-9a-f]{8}", first)
+    assert passes.version("text", cfg, "Read it.") == first
+
+    cfg.effort = "high"
+    changed = passes.version("text", cfg, "Read it.")
+    assert changed != first
+    cfg.effort = "medium"
+    assert passes.version("text", cfg, "Read it.") == first
+
+    # The switch, the queue size and where the prompt lives change nothing
+    # about the answer, so flipping them must not re-read everything.
+    cfg.enabled = False
+    cfg.max_per_run = 1
+    cfg.prompt_file = "elsewhere.md"
+    assert passes.version("text", cfg, "Read it.") == first
+
+
+def test_the_scoring_version_covers_the_preferences_and_the_settings():
+    from karpm import scoring
+    cfg = Config().scoring
+    first = scoring.version(cfg, "## About\n\nA GS.")
+    assert re.fullmatch(r"[0-9a-f]{8}", first)
+    assert scoring.version(cfg, "## About\n\nAn Africa Twin.") != first
+    cfg.model = "claude-fable-5-1"
+    assert scoring.version(cfg, "## About\n\nA GS.") != first
 
 
 def test_a_failed_pass_stores_nothing(conn):
@@ -200,8 +236,8 @@ def test_an_edited_ad_is_read_again_but_its_photos_are_not(conn, tmp_path):
 
     listing(conn, description="Now with a new exhaust.")
 
-    assert db.extraction_backlog(conn, "text", passes.prompt_version("text", conf.extract_text)) == 1
-    assert db.extraction_backlog(conn, "photos", passes.prompt_version("photos", conf.extract_photos)) == 0
+    assert db.extraction_backlog(conn, "text", passes.version("text", conf.extract_text)) == 1
+    assert db.extraction_backlog(conn, "photos", passes.version("photos", conf.extract_photos)) == 0
 
 
 def test_a_new_photo_sends_the_photos_back_but_not_the_text(conn, tmp_path):
@@ -220,8 +256,8 @@ def test_a_new_photo_sends_the_photos_back_but_not_the_text(conn, tmp_path):
     db.record_image_download(conn, image["id"], str(path), "sha", len(PNG))
     conn.commit()
 
-    assert db.extraction_backlog(conn, "photos", passes.prompt_version("photos", conf.extract_photos)) == 1
-    assert db.extraction_backlog(conn, "text", passes.prompt_version("text", conf.extract_text)) == 0
+    assert db.extraction_backlog(conn, "photos", passes.version("photos", conf.extract_photos)) == 1
+    assert db.extraction_backlog(conn, "text", passes.version("text", conf.extract_text)) == 0
 
 
 def test_a_listing_waiting_to_be_refetched_is_left_alone(conn):
@@ -468,7 +504,7 @@ def test_extract_one_re_reads_something_already_read(one, conn, run_cli):
     editing a prompt."""
     conf = Config()
     extract.run_pass(conn, "text", conf.extract_text, FakeProvider({"text": TEXT_ANSWER}))
-    assert db.extraction_backlog(conn, "text", passes.prompt_version("text", conf.extract_text)) == 0
+    assert db.extraction_backlog(conn, "text", passes.version("text", conf.extract_text)) == 0
 
     fake = FakeProvider({"text": TEXT_ANSWER})
     run_cli(one, "extract-one", "111", "--text-only", fake=fake)
@@ -634,10 +670,10 @@ def test_editing_the_prompt_makes_every_reading_stale(conn, tmp_path):
 
     listing(conn)
     extract.run_pass(conn, "text", cfg, FakeProvider({"text": TEXT_ANSWER}))
-    assert db.extraction_backlog(conn, "text", passes.prompt_version("text", cfg)) == 0
+    assert db.extraction_backlog(conn, "text", passes.version("text", cfg)) == 0
 
     Path(cfg.prompt_file).write_text("Read it, and note the tyres.", encoding="utf-8")
-    assert db.extraction_backlog(conn, "text", passes.prompt_version("text", cfg)) == 1
+    assert db.extraction_backlog(conn, "text", passes.version("text", cfg)) == 1
 
     fake = FakeProvider({"text": TEXT_ANSWER})
     assert extract.run_pass(conn, "text", cfg, fake)["done"] == 1
@@ -654,9 +690,9 @@ def test_putting_the_prompt_back_makes_the_old_reading_current_again(conn, tmp_p
     extract.run_pass(conn, "text", cfg, FakeProvider({"text": TEXT_ANSWER}))
 
     Path(cfg.prompt_file).write_text("Something else.", encoding="utf-8")
-    assert db.extraction_backlog(conn, "text", passes.prompt_version("text", cfg)) == 1
+    assert db.extraction_backlog(conn, "text", passes.version("text", cfg)) == 1
     Path(cfg.prompt_file).write_text("Read it.", encoding="utf-8")
-    assert db.extraction_backlog(conn, "text", passes.prompt_version("text", cfg)) == 0
+    assert db.extraction_backlog(conn, "text", passes.version("text", cfg)) == 0
 
 
 def test_a_missing_prompt_file_is_not_a_complaint(conn, tmp_path, caplog):

@@ -39,7 +39,11 @@ def test_example_config_loads():
 # Settings the example deliberately leaves out: headers nobody should be
 # editing, and a backoff that only matters once you are already blocked.
 NOT_IN_THE_EXAMPLE = {("scrape", "user_agent"), ("scrape", "accept_language"),
-                      ("scrape", "block_backoff_s")}
+                      ("scrape", "block_backoff_s"),
+                      # Shown commented out: unset means "not sent", which is
+                      # what nearly every model needs.
+                      ("extract_text", "temperature"), ("extract_photos", "temperature"),
+                      ("scoring", "temperature")}
 
 
 def test_example_config_shows_every_setting():

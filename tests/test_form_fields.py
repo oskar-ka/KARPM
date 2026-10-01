@@ -29,7 +29,7 @@ NOT_ON_THE_CONFIG_PAGE = {("", "searches")}
 KIND_FOR = {
     str: "text", int: "int", float: "float", bool: "bool",
     list[str]: "lines", list[float]: "numbers",
-    int | None: "int", str | None: "text",
+    int | None: "int", str | None: "text", float | None: "float",
 }
 
 

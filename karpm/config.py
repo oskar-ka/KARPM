@@ -148,16 +148,22 @@ class ExtractTextConfig:
     A text-only job, so any provider can serve it - including one with no vision
     at all. It never overwrites a parsed field; what it finds is stored beside
     the hard facts and marked as inferred.
+
+    There is no version to bump: the key that decides whether stored findings
+    are still current is a hash of the prompt and of the settings below that
+    shape the answer (`karpm.ai.passes.version`).
     """
 
     enabled: bool = True
     provider: str = "anthropic"
     model: str = "claude-haiku-4-5"
     effort: str = "medium"
+    # Only sent to a model that still takes one; the thinking models reject it.
+    temperature: float | None = None
+    max_tokens: int = 4000
     # The pass's instructions. Missing means "use the one built into the code",
     # which is what a fresh install has until the prompts page saves one.
     prompt_file: str = "prompts/extract_text.md"
-    prompt_version: str = "v1"
     max_per_run: int = 200
 
 
@@ -175,10 +181,11 @@ class ExtractPhotosConfig:
     provider: str = "anthropic"
     model: str = "claude-haiku-4-5"
     effort: str = "medium"
+    temperature: float | None = None
+    max_tokens: int = 4000
     # The pass's instructions. Missing means "use the one built into the code",
     # which is what a fresh install has until the prompts page saves one.
     prompt_file: str = "prompts/extract_photos.md"
-    prompt_version: str = "v1"
     max_per_run: int = 200
     # How many photos this pass looks at, and how many it passes on.
     max_photos_in: int = 12
@@ -191,7 +198,8 @@ class ScoringConfig:
     provider: str = "anthropic"
     model: str = "claude-opus-5"
     effort: str = "medium"
-    prompt_version: str = "v1"
+    temperature: float | None = None
+    max_tokens: int = 4000
     preferences_file: str = "preferences.md"
     # Photos carry real signal about condition, but cost ~1.5k input tokens
     # each. 0 disables vision entirely.

@@ -33,6 +33,10 @@ class Model:
     # have to fit in - so those models are asked without either.
     thinking: bool = True
     effort: tuple[str, ...] = EVERY_EFFORT
+    # Takes `temperature`. The adaptive-thinking generation rejects any
+    # sampling parameter with a 400, so it is only ever sent to the models
+    # that still have one.
+    sampling: bool = False
 
     @property
     def label(self) -> str:
@@ -40,7 +44,7 @@ class Model:
 
 
 CATALOGUE = (
-    Model("claude-haiku-4-5", 1, 5, thinking=False, effort=()),
+    Model("claude-haiku-4-5", 1, 5, thinking=False, effort=(), sampling=True),
     Model("claude-sonnet-5", 2, 10),
     Model("claude-opus-5", 5, 25),
     Model("claude-fable-5-1", 10, 50),
@@ -56,6 +60,11 @@ LABELS = {model.id: model.label for model in CATALOGUE}
 # The models that take an effort level, for the config page to hide the row for
 # the ones that do not.
 WITH_EFFORT = tuple(model.id for model in CATALOGUE if model.effort)
+
+# The models that take a temperature. A model missing from the table is
+# assumed not to: it is newer than the table, and the newer generation
+# rejects the parameter.
+WITH_SAMPLING = tuple(model.id for model in CATALOGUE if model.sampling)
 
 
 def get(model_id: str) -> Model | None:

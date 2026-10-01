@@ -143,15 +143,18 @@ listing_id      2847612345
 overall         5          fit  5      value  4
 fair_price_eur  6800
 content_hash    9b3a15bf…   ← the listing state this verdict refers to
-prompt_version  v1          ← the preferences that produced it
+prompt_version  3f9a1c2e    ← the rubric, preferences and settings that produced it
 input_tokens    4820        output_tokens  512
 ```
 
 - `content_hash` — a listing whose price dropped no longer matches its stored
   score, so it is re-scored automatically.
-- `prompt_version` — bump it in `config.toml` after rewriting `preferences.md`
-  and everything is re-scored against the new criteria. Old verdicts remain, so
-  you can see how your own taste shifted.
+- `prompt_version` — a hash of the scoring rubric, `preferences.md` and the
+  settings that shape the answer (provider, model, effort, temperature,
+  max_tokens). Rewrite your preferences or change the model and the current
+  hash changes, so everything is re-scored against the new criteria. Old
+  verdicts remain, so you can see how your own taste shifted; rows from before
+  this scheme carry the label that was in the config then (`v1`).
 - token counts — your actual spend, per listing.
 
 The `listing_current` view joins each listing to its newest score. The emails
@@ -167,7 +170,7 @@ the old reading of text that has since been edited is of no use to anyone.
 listing_id      2847612345
 kind            text        ← "text" (pass 1) or "photos" (pass 2)
 provider        anthropic   model  claude-haiku-4-5
-prompt_version  v1
+prompt_version  a71e0c44    ← the prompt and settings that produced it
 source_hash     9b3a15bf…   ← what this reading was made from
 data_json       {"summary": …, "known_faults": […], …}
 input_tokens    1840        output_tokens  610

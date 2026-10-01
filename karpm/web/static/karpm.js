@@ -72,16 +72,77 @@
     var chosen = select.value;
     section.querySelectorAll("[data-shown-for]").forEach(function (row) {
       var ids = row.getAttribute("data-shown-for").split(" ");
-      // A model we have never heard of is assumed to take everything: it is
-      // newer than our list, not older, and guessing the other way would hide
-      // a setting that does work.
+      // A model we have never heard of is newer than our list, not older. For
+      // most settings that means "assume it takes it" - hiding a working
+      // setting would be the worse guess. The row says when it is the other
+      // way round: a newer model rejects a temperature.
       var known = select.querySelector('option[value="' + chosen + '"]:not([data-unknown])');
-      row.hidden = known !== null && ids.indexOf(chosen) === -1;
+      if (known === null) {
+        row.hidden = row.getAttribute("data-unknown-model") === "hide";
+      } else {
+        row.hidden = ids.indexOf(chosen) === -1;
+      }
     });
   }
 
   selects.forEach(function (select) {
     apply(select);
     select.addEventListener("change", function () { apply(select); });
+  });
+})();
+
+
+// The pop-up on the prompts page: what each pass would send, as the page
+// stands. The form is posted to a preview route that builds the request the
+// same way a run does and returns the JSON the SDK would put on the wire;
+// nothing is saved. Shown re-indented for reading, or exactly as sent.
+(function () {
+  var button = document.getElementById("show-request");
+  var dialog = document.getElementById("request-dialog");
+  if (!button || !dialog || typeof dialog.showModal !== "function") return;
+  var form = document.getElementById("prompts-form");
+  var body = document.getElementById("request-body");
+  var compact = document.getElementById("request-compact");
+  var passes = [];
+
+  function render() {
+    body.innerHTML = "";
+    passes.forEach(function (pass) {
+      var h = document.createElement("h3");
+      h.textContent = pass.title + " - via " + pass.provider;
+      var pre = document.createElement("pre");
+      pre.className = "wire";
+      var text = pass.body;
+      if (!compact.checked) {
+        try { text = JSON.stringify(JSON.parse(pass.body), null, 2); } catch (e) { /* show as is */ }
+      }
+      pre.textContent = text;
+      body.appendChild(h);
+      body.appendChild(pre);
+    });
+  }
+
+  button.addEventListener("click", function () {
+    body.textContent = "building the requests...";
+    dialog.showModal();
+    fetch(button.getAttribute("data-url"), {
+      method: "POST", body: new FormData(form),
+      headers: { "X-Requested-With": "fetch" }
+    }).then(function (r) { return r.json().then(function (data) { return { ok: r.ok, data: data }; }); })
+      .then(function (result) {
+        if (!result.ok) {
+          var errors = result.data.errors || {};
+          body.textContent = "nothing to show until these are fixed: "
+            + Object.keys(errors).map(function (k) { return k + " - " + errors[k]; }).join("; ");
+          return;
+        }
+        passes = result.data.passes;
+        render();
+      })
+      .catch(function () { body.textContent = "could not reach karpm web"; });
+  });
+  compact.addEventListener("change", render);
+  document.getElementById("request-close").addEventListener("click", function () {
+    dialog.close();
   });
 })();

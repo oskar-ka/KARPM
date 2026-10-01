@@ -2,19 +2,20 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import logging
 import shutil
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from flask import (Flask, abort, flash, redirect, render_template, request,
+from flask import (Flask, abort, flash, jsonify, redirect, render_template, request,
                    send_file, url_for)
 
 from . import fields, tomledit
-from .. import db, derived
+from .. import db, derived, scoring
 from .. import preferences as preferences_file
-from ..ai import passes
+from ..ai import passes, provider
 from ..parse import fields as parse_fields
 from ..config import Config, load_config
 
@@ -272,22 +273,49 @@ def create_app(config_path: str = "config.toml") -> Flask:
 
     @app.route("/prompts")
     def prompts():
-        return render_template("prompts.html", **_prompt_page(conf()))
+        current = conf()
+        return render_template("prompts.html", **_prompt_page(
+            current, _current_values(current, fields.PASS_SECTIONS), {}))
 
     @app.post("/prompts")
     def save_prompts():
         current = conf()
-        written, marked = [], {"read": 0, "scored": 0}
+        path = Path(app.config["KARPM_CONFIG_PATH"])
+
+        # The settings beside the prompts are checked first, and a typo in one
+        # of them stops the whole save: half a page written and half refused
+        # would leave the prompt on disk disagreeing with the settings beside it.
+        parsed, errors, blanks = _parse_config_form(request.form, fields.PASS_SECTIONS)
+        if errors:
+            flash(_needs_fixing(errors), "error")
+            return render_template("prompts.html", **_prompt_page(
+                current, _submitted_values(request.form, fields.PASS_SECTIONS), errors,
+                prompts=_submitted_prompts(request.form)))
+
+        updates, removals = _only_changed(parsed, blanks, current, fields.PASS_SECTIONS)
+        if updates or removals:
+            text = tomledit.set_values(tomledit.remove_keys(
+                path.read_text(encoding="utf-8"), removals), updates)
+            try:
+                _write_checked(path, text)
+            except (ValueError, OSError) as exc:
+                flash(f"rejected, nothing was changed: {exc}", "error")
+                return render_template("prompts.html", **_prompt_page(
+                    current, _submitted_values(request.form, fields.PASS_SECTIONS), {},
+                    prompts=_submitted_prompts(request.form)))
+
+        written = ["the settings"] if updates or removals else []
+        marked = {"read": 0, "scored": 0}
 
         for kind, cfg in (("text", current.extract_text),
                           ("photos", current.extract_photos)):
             text = (request.form.get(f"prompt_{kind}") or "").strip()
-            path = Path(cfg.prompt_file or "")
-            if not str(path) or text == passes.load_prompt(kind, cfg).strip():
+            prompt_path = Path(cfg.prompt_file or "")
+            if not str(prompt_path) or text == passes.load_prompt(kind, cfg).strip():
                 continue                # unchanged, or nowhere to put it
-            path.parent.mkdir(parents=True, exist_ok=True)
-            _backup(path)
-            path.write_text(text + "\n", encoding="utf-8")
+            prompt_path.parent.mkdir(parents=True, exist_ok=True)
+            _backup(prompt_path)
+            prompt_path.write_text(text + "\n", encoding="utf-8")
             written.append(f"the {'description' if kind == 'text' else 'photo'} prompt")
 
         prefs_path = Path(current.scoring.preferences_file)
@@ -301,17 +329,24 @@ def create_app(config_path: str = "config.toml") -> Flask:
             prefs_path.write_text(after, encoding="utf-8")
             written.append("your preferences")
 
+        # Counted against the config as it now is: the version is a hash of
+        # the prompt and the settings, so a changed model counts as much as a
+        # changed prompt.
+        saved = conf()
         conn = connect()
         try:
             # Nothing about a listing changes when you rewrite what you want or
             # how you ask, so the stale rows have to be marked here rather than
-            # noticed later. A changed prompt is caught by the reading passes
-            # themselves, whose key includes the prompt's text.
+            # noticed later. A changed prompt or setting is caught by the
+            # passes themselves, whose key is a hash of both.
             marked["scored"] = db.note_preferences(conn, after)
+            if saved.scoring.rescore_on_change:
+                marked["scored"] = max(marked["scored"], db.score_backlog(
+                    conn, scoring.version(saved.scoring, after.strip())))
             marked["read"] = sum(
-                db.extraction_backlog(conn, kind, passes.prompt_version(kind, cfg))
-                for kind, cfg in (("text", current.extract_text),
-                                  ("photos", current.extract_photos))
+                db.extraction_stale(conn, kind, passes.version(kind, cfg))
+                for kind, cfg in (("text", saved.extract_text),
+                                  ("photos", saved.extract_photos))
                 if cfg.enabled)
         finally:
             conn.close()
@@ -329,25 +364,47 @@ def create_app(config_path: str = "config.toml") -> Flask:
                      if cost else ""), "ok")
         return redirect(url_for("prompts"))
 
+    @app.post("/prompts/request")
+    def prompt_request():
+        """The three requests as they would go over the wire, from the form
+        as it stands - saved or not - with placeholders for the ad's fields.
+
+        Rendered from the submitted page rather than the saved config, so what
+        the pop-up shows is what the page shows, edits included. Nothing is
+        written.
+        """
+        current = conf()
+        parsed, errors, blanks = _parse_config_form(request.form, fields.PASS_SECTIONS)
+        if errors:
+            return jsonify({"errors": {_readable(k): v for k, v in errors.items()}}), 400
+        try:
+            return jsonify({"passes": _wire_bodies(
+                _with_overrides(current, parsed, blanks), _submitted_prompts(request.form))})
+        except provider.ProviderError as exc:
+            return jsonify({"errors": {"provider": str(exc)}}), 400
+
     @app.route("/config")
     def config_page():
         path = Path(app.config["KARPM_CONFIG_PATH"])
         return render_template("config.html", path=path,
-                               sections=fields.SECTIONS,
-                               values=_current_values(conf()), errors={})
+                               sections=fields.CONFIG_SECTIONS,
+                               values=_current_values(conf(), fields.CONFIG_SECTIONS),
+                               errors={})
 
     @app.post("/config")
     def save_config():
         path = Path(app.config["KARPM_CONFIG_PATH"])
-        parsed, errors, blanks = _parse_config_form(request.form)
+        parsed, errors, blanks = _parse_config_form(request.form, fields.CONFIG_SECTIONS)
         if errors:
             # Nothing is written; the page comes back with what was typed and
             # the problem beside the field it is in.
             flash(_needs_fixing(errors), "error")
-            return render_template("config.html", path=path, sections=fields.SECTIONS,
-                                   values=_submitted_values(request.form), errors=errors)
+            return render_template(
+                "config.html", path=path, sections=fields.CONFIG_SECTIONS,
+                values=_submitted_values(request.form, fields.CONFIG_SECTIONS),
+                errors=errors)
 
-        updates, removals = _only_changed(parsed, blanks, conf())
+        updates, removals = _only_changed(parsed, blanks, conf(), fields.CONFIG_SECTIONS)
         text = path.read_text(encoding="utf-8")
         text = tomledit.remove_keys(text, removals)
         text = tomledit.set_values(text, updates)
@@ -355,8 +412,10 @@ def create_app(config_path: str = "config.toml") -> Flask:
             _write_checked(path, text)
         except (ValueError, OSError) as exc:
             flash(f"rejected, nothing was changed: {exc}", "error")
-            return render_template("config.html", path=path, sections=fields.SECTIONS,
-                                   values=_submitted_values(request.form), errors={})
+            return render_template(
+                "config.html", path=path, sections=fields.CONFIG_SECTIONS,
+                values=_submitted_values(request.form, fields.CONFIG_SECTIONS),
+                errors={})
         flash("config saved - the daemon rereads it on its next cycle", "ok")
         return redirect(url_for("config_page"))
 
@@ -396,10 +455,10 @@ def _write_checked(path: Path, text: str) -> None:
     path.write_text(text, encoding="utf-8")
 
 
-def _current_values(conf: Config) -> dict:
+def _current_values(conf: Config, sections) -> dict:
     """The value of every form field, as it is now, keyed "section.key"."""
     values = {}
-    for section in fields.SECTIONS:
+    for section in sections:
         holder = conf if section.name == "" else getattr(conf, section.name)
         for spec in section.fields:
             values[fields.input_name(section.name, spec.key)] = _as_form_text(
@@ -407,10 +466,10 @@ def _current_values(conf: Config) -> dict:
     return values
 
 
-def _submitted_values(form) -> dict:
+def _submitted_values(form, sections) -> dict:
     """What the user typed, so a rejected save comes back with their edits."""
     values = {}
-    for section in fields.SECTIONS:
+    for section in sections:
         for spec in section.fields:
             name = fields.input_name(section.name, spec.key)
             values[name] = (form.get(name) == "1" if spec.kind == "bool"
@@ -438,7 +497,7 @@ def _trim_float(value) -> str:
     return text[:-2] if text.endswith(".0") else text
 
 
-def _parse_config_form(form) -> tuple[dict, dict, dict]:
+def _parse_config_form(form, sections) -> tuple[dict, dict, dict]:
     """Read the form into TOML-ready values.
 
     Returns the values to write, the per-field errors, and the optional fields
@@ -449,7 +508,7 @@ def _parse_config_form(form) -> tuple[dict, dict, dict]:
     errors: dict[str, str] = {}
     blanks: dict[str, set] = {}
 
-    for section in fields.SECTIONS:
+    for section in sections:
         for spec in section.fields:
             name = fields.input_name(section.name, spec.key)
             if spec.kind == "bool":
@@ -475,7 +534,7 @@ def _parse_config_form(form) -> tuple[dict, dict, dict]:
     return parsed, errors, blanks
 
 
-def _only_changed(parsed: dict, blanks: dict, conf: Config) -> tuple[dict, dict]:
+def _only_changed(parsed: dict, blanks: dict, conf: Config, sections) -> tuple[dict, dict]:
     """Narrow a whole submitted form down to the values that actually differ.
 
     Without this, every save rewrites every line: a `4` typed into a float field
@@ -485,7 +544,7 @@ def _only_changed(parsed: dict, blanks: dict, conf: Config) -> tuple[dict, dict]
     """
     updates: dict[str, dict] = {}
     removals: dict[str, set] = {}
-    for section in fields.SECTIONS:
+    for section in sections:
         holder = conf if section.name == "" else getattr(conf, section.name)
         for spec in section.fields:
             now = getattr(holder, spec.key, None)
@@ -848,13 +907,24 @@ def _status(conn, conf) -> dict:
     }
 
 
-def _prompt_page(conf) -> dict:
-    """Everything the prompts page shows: two prompts, and preferences in parts."""
+def _prompt_page(conf, values: dict, errors: dict, prompts: dict | None = None) -> dict:
+    """Everything the prompts page shows: three prompts, each with its settings.
+
+    `prompts` is what was typed, for a save that came back refused; otherwise
+    the prompts are read from disk.
+    """
     prefs_path = Path(conf.scoring.preferences_file)
     text = prefs_path.read_text(encoding="utf-8") if prefs_path.exists() else ""
+    typed = prompts or {}
+    reading = {"text": conf.extract_text, "photos": conf.extract_photos}
+    shown = {kind: typed.get(kind) if typed.get(kind) is not None
+             else passes.load_prompt(kind, cfg) for kind, cfg in reading.items()}
+    prefs = typed.get("preferences") if typed.get("preferences") is not None else text
     return {
         "parts": preferences_file.PARTS,
-        "values": preferences_file.split(text),
+        "values": preferences_file.split(prefs),
+        "settings": values,
+        "errors": errors,
         "prefs_path": prefs_path,
         "passes": [
             {"kind": "text", "number": 1, "title": "pass 1 - the description",
@@ -862,17 +932,87 @@ def _prompt_page(conf) -> dict:
                       "the seller's prose and writes down what is claimed; it "
                       "does not judge the bike.",
              "path": conf.extract_text.prompt_file,
-             "enabled": conf.extract_text.enabled,
-             "text": passes.load_prompt("text", conf.extract_text)},
+             "section": fields.section("extract_text"),
+             "version": passes.version("text", conf.extract_text, shown["text"]),
+             "text": shown["text"]},
             {"kind": "photos", "number": 2, "title": "pass 2 - the photos",
              "blurb": "What pass 2 is told before it is shown the gallery. It "
                       "describes what is visible and shortlists the photos "
                       "worth sending on to pass 3.",
              "path": conf.extract_photos.prompt_file,
-             "enabled": conf.extract_photos.enabled,
-             "text": passes.load_prompt("photos", conf.extract_photos)},
+             "section": fields.section("extract_photos"),
+             "version": passes.version("photos", conf.extract_photos, shown["photos"]),
+             "text": shown["photos"]},
+            {"kind": "score", "number": 3, "title": "pass 3 - what you want",
+             "section": fields.section("scoring"),
+             "version": scoring.version(conf.scoring, prefs.strip())},
         ],
     }
+
+
+def _submitted_prompts(form) -> dict:
+    """The three prompts as the page submitted them."""
+    return {
+        "text": form.get("prompt_text", ""),
+        "photos": form.get("prompt_photos", ""),
+        "preferences": preferences_file.compile({
+            part.key: form.get(f"pref_{part.key}", "")
+            for part in preferences_file.PARTS}),
+    }
+
+
+def _with_overrides(conf: Config, parsed: dict, blanks: dict) -> Config:
+    """The config as the submitted form would have it, without writing it.
+
+    A blank in an optional field means the built-in default, which is what
+    removing the key from the file would give.
+    """
+    sections = {}
+    for section in fields.PASS_SECTIONS:
+        holder = getattr(conf, section.name)
+        defaults = {f.name: f.default for f in dataclasses.fields(holder)}
+        changes = dict(parsed.get(section.name, {}))
+        for key in blanks.get(section.name, ()):
+            changes[key] = defaults[key]
+        sections[section.name] = dataclasses.replace(holder, **changes)
+    return dataclasses.replace(conf, **sections)
+
+
+def _wire_bodies(conf: Config, prompts: dict) -> list[dict]:
+    """What each pass would send, as JSON text, with placeholders for the ad."""
+    requests = [
+        ("pass 1 - the description",
+         conf.extract_text,
+         passes.template_request("text", conf.extract_text, prompts["text"].strip())),
+        ("pass 2 - the photos",
+         conf.extract_photos,
+         passes.template_request("photos", conf.extract_photos, prompts["photos"].strip())),
+        ("pass 3 - the verdict",
+         conf.scoring,
+         scoring.Scorer(conf.scoring, prompts["preferences"].strip(),
+                        client=_Unsent()).template_request()),
+    ]
+    out = []
+    for title, cfg, request_ in requests:
+        engine = provider.get(cfg.provider)
+        out.append({"title": title, "provider": cfg.provider,
+                    "body": engine.wire_body(request_)})
+    return out
+
+
+class _Unsent:
+    """A provider for a scorer that will only ever show its request."""
+
+    name = "unsent"
+
+    def supports_images(self) -> bool:
+        return True
+
+    def complete(self, request_):
+        raise provider.ProviderError("this scorer only shows requests")
+
+    def wire_body(self, request_) -> str:
+        raise provider.ProviderError("this scorer only shows requests")
 
 
 def _unread_counts(conn, conf) -> dict:
@@ -891,7 +1031,7 @@ def _unread_counts(conn, conf) -> dict:
         # The same key the pass itself uses, prompt text included - otherwise
         # editing a prompt would leave this reading "done" while every listing
         # was in fact due to be read again.
-        out[label] = db.extraction_backlog(conn, kind, passes.prompt_version(kind, cfg))
+        out[label] = db.extraction_backlog(conn, kind, passes.version(kind, cfg))
     return out
 
 

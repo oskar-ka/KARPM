@@ -1,56 +1,96 @@
 {% extends "base.html" %}
+{% from "_fields.html" import row %}
 {% block title %}prompts{% endblock %}
 {% block body %}
 <h1>prompts</h1>
-<p class="sub">Everything the three passes are told, in the order they run. The two
-  reading passes get their instructions from their own files; what you want out of a
-  bike is compiled into <code>{{ prefs_path }}</code> and given to pass 3 whole.</p>
+<p class="sub">Everything about how an ad is judged: what the three passes are told, in the
+  order they run, and the model each one runs on. The two reading passes get their
+  instructions from their own files; what you want out of a bike is compiled into
+  <code>{{ prefs_path }}</code> and given to pass 3 whole.</p>
 
-<form method="post">
-  {# Passes 1 and 2: one box each. The shape of these is still being worked out,
-     so they stay free text rather than being split into questions. #}
+<form method="post" id="prompts-form">
   {% for pass_ in passes %}
-    <section class="panel">
+    {% set section = pass_.section %}
+    <section class="panel pass" data-kind="{{ pass_.kind }}">
       <h2>{{ pass_.title }}
-        {% if not pass_.enabled %}<span class="tag warn">pass switched off</span>{% endif %}
+        {% for spec in section.fields if spec.key == 'enabled' %}
+          {% set name = input_name(section.name, spec.key) %}
+          <label class="switch" title="{{ spec.help }}">
+            <input type="checkbox" id="{{ name }}" name="{{ name }}" value="1"
+                   {{ 'checked' if settings[name] }}> on
+          </label>
+        {% endfor %}
       </h2>
-      <p class="sub">{{ pass_.blurb }}</p>
-      <textarea name="prompt_{{ pass_.kind }}" rows="16" spellcheck="false"
-                class="prompt">{{ pass_.text }}</textarea>
-      <p class="note">Saved to <code>{{ pass_.path or 'nowhere - set prompt_file in the config' }}</code>.
-        Emptying it puts the built-in prompt back. Changing it makes every listing
-        due to be read again, so what is stored matches what was asked for.</p>
+
+      <div class="pane">
+        <div class="prompt-side">
+          {% if pass_.kind == 'score' %}
+            {# Pass 3: five questions instead of one blank page. #}
+            <p class="sub">The five parts below become one markdown file, which goes to
+              the scoring pass with every listing. Be concrete, and say what you do not
+              care about as well as what you do. These boxes are the whole file: saving
+              rewrites it, and the version before the save is kept as
+              <code>{{ prefs_path.name }}.bak</code>.</p>
+            {% for part in parts %}
+              <div class="field stacked">
+                <label for="pref_{{ part.key }}">{{ part.heading }}</label>
+                <div class="control">
+                  <textarea id="pref_{{ part.key }}" name="pref_{{ part.key }}" rows="5"
+                            spellcheck="false"
+                            placeholder="{{ part.placeholder }}">{{ values[part.key] }}</textarea>
+                </div>
+                <p class="note">{{ part.help }}</p>
+              </div>
+            {% endfor %}
+          {% else %}
+            {# Passes 1 and 2: one box each. The shape of these is still being
+               worked out, so they stay free text rather than being split into
+               questions. #}
+            <p class="sub">{{ pass_.blurb }}</p>
+            <textarea name="prompt_{{ pass_.kind }}" rows="18" spellcheck="false"
+                      class="prompt">{{ pass_.text }}</textarea>
+            <p class="note">Saved to <code>{{ pass_.path or 'nowhere - set prompt_file in the config' }}</code>.
+              Emptying it puts the built-in prompt back.</p>
+          {% endif %}
+        </div>
+
+        <aside class="params">
+          {% for spec in section.fields if spec.key != 'enabled' %}
+            {% set name = input_name(section.name, spec.key) %}
+            {{ row(spec, name, settings[name], errors.get(name)) }}
+          {% endfor %}
+          <div class="field version">
+            <label>version</label>
+            <div class="control"><code data-version>{{ pass_.version }}</code></div>
+            <p class="note">A hash of the prompt and the settings above, as saved.
+              It changes when either does, and a listing read under another
+              version is due again.</p>
+          </div>
+        </aside>
+      </div>
     </section>
   {% endfor %}
-
-  {# Pass 3: five questions instead of one blank page. #}
-  <section class="panel">
-    <h2>pass 3 - what you want</h2>
-    <p class="sub">The five parts below become one markdown file, which goes to the
-      scoring pass with every listing. Be concrete, and say what you do not care
-      about as well as what you do - it stops a listing being marked down for
-      something you would never notice. These boxes are the whole file: saving
-      rewrites it, and the version before the save is kept as
-      <code>{{ prefs_path.name }}.bak</code>.</p>
-
-    {% for part in parts %}
-      <div class="field stacked">
-        <label for="pref_{{ part.key }}">{{ part.heading }}</label>
-        <div class="control">
-          <textarea id="pref_{{ part.key }}" name="pref_{{ part.key }}" rows="6"
-                    spellcheck="false"
-                    placeholder="{{ part.placeholder }}">{{ values[part.key] }}</textarea>
-        </div>
-        <p class="note">{{ part.help }}</p>
-      </div>
-    {% endfor %}
-  </section>
 
   <div class="actions">
     <button class="primary">save</button>
     <a class="button" href="{{ url_for('dashboard') }}">cancel</a>
-    <span class="muted">a changed prompt or preference re-reads or re-scores what
-      it invalidates, which costs credits</span>
+    <button type="button" class="secondary" id="show-request"
+            data-url="{{ url_for('prompt_request') }}">show what is sent</button>
+    <span class="muted">a changed prompt or setting re-reads or re-scores what it
+      invalidates, which costs credits</span>
   </div>
 </form>
+
+<dialog id="request-dialog">
+  <div class="dialog-head">
+    <h2>what is sent</h2>
+    <label class="switch"><input type="checkbox" id="request-compact"> as on the wire</label>
+    <button type="button" class="secondary" id="request-close">close</button>
+  </div>
+  <p class="sub">The exact JSON each pass sends, built by the same code as the real
+    request from the page as it stands, saved or not. Only the values in
+    <code>{braces}</code> are stand-ins for the ad's own fields; a real request also
+    leaves out lines for facts the ad does not state.</p>
+  <div id="request-body"></div>
+</dialog>
 {% endblock %}

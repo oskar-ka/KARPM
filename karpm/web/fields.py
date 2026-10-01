@@ -41,33 +41,53 @@ PRICE_NOTE = (f"Prices are per million tokens as of {models.PRICES_AS_OF}, for "
               f"still be set by hand in the file, and is kept.")
 
 
+# The settings every pass has, in the order they are shown: who answers, then
+# how it is asked. Each takes a note of its own because what a cheap model is
+# good for differs by pass.
+def provider_field(help: str = "") -> Field:
+    return Field("provider", "choice", help or "Which API answers.", choices=PROVIDER_CHOICES)
+
+
 def model_field(help: str = "") -> Field:
-    return Field("model", "choice", f"{help} {PRICE_NOTE}".strip(),
+    return Field("model", "choice", help or "Prices per million tokens, in and out.",
                  choices=MODEL_CHOICES, open_choice=True)
 
 
-def prompt_file_field() -> Field:
-    return Field("prompt_file", "text",
-                 "What this pass is told to do, edited on the prompts page. "
-                 "Missing means the prompt built into the code. Changing the "
-                 "prompt re-reads every listing, so the findings match what "
-                 "was asked for.", wide=True)
-
-
-EFFORT_NOTE = ("How hard the model thinks. Only some models take one - the row "
-               "is hidden for the others, and the setting is left out of what "
-               "is sent to them rather than being rejected.")
-
-
-def effort_field(help: str = "") -> Field:
+def effort_field() -> Field:
     """Effort, shown only for the models that accept one.
 
     Haiku takes neither adaptive thinking nor an effort level, and rejects the
     whole request rather than ignoring what it cannot use - so offering the
     setting for it was offering a way to break every call the pass makes.
     """
-    return Field("effort", "choice", help or EFFORT_NOTE, choices=EFFORTS,
-                 shown_for=models.WITH_EFFORT)
+    return Field("effort", "choice", "How hard it thinks. Hidden for models that "
+                                     "take no effort level.",
+                 choices=EFFORTS, shown_for=models.WITH_EFFORT)
+
+
+def temperature_field() -> Field:
+    """Temperature, shown only for the models that still take one.
+
+    The adaptive-thinking generation rejects it with a 400, so the row is
+    hidden for those - and for a model the list has never heard of, which is
+    assumed to be of that generation.
+    """
+    return Field("temperature", "float", "0 is deterministic, 1 is the default. "
+                                         "Hidden for models that reject it.",
+                 optional=True, placeholder="not sent",
+                 shown_for=models.WITH_SAMPLING, shown_for_unknown=False)
+
+
+def max_tokens_field() -> Field:
+    return Field("max_tokens", "int", "Ceiling on the answer, in tokens.")
+
+
+def prompt_file_field() -> Field:
+    return Field("prompt_file", "text", "Where the prompt above is saved.", wide=True)
+
+
+def max_per_run_field() -> Field:
+    return Field("max_per_run", "int", "Most listings per run.")
 
 
 @dataclass(frozen=True)
@@ -88,6 +108,9 @@ class Field:
     # hides the row for the others rather than offering a setting that would be
     # rejected by the model the section is pointed at.
     shown_for: tuple[str, ...] = ()
+    # Whether a model the list has never heard of gets the row. A newer model
+    # takes an effort level (so yes) but no temperature (so no).
+    shown_for_unknown: bool = True
 
 
 @dataclass(frozen=True)
@@ -184,70 +207,56 @@ SECTIONS = (
         Field("max_bytes", "int", "Largest single photo to keep, in bytes."),
     )),
 
-    Section("extract_text", "pass 1: the description", (
+    Section("extract_text", "pass 1 - the description", (
         "Reads the seller's prose and writes down what it says: work done, "
         "faults admitted, what is included. Nothing it finds overwrites a "
         "parsed field - it is a model's reading of the text, and pass 3 is "
         "told so."), (
-        Field("enabled", "bool", "Off skips the pass. Scoring then sees the raw "
-                                 "description, as it did before."),
-        Field("provider", "choice", "", choices=PROVIDER_CHOICES),
-        model_field("A cheap model is enough here - it is reading, not judging."),
+        Field("enabled", "bool", "Off skips the pass; pass 3 sees the raw text."),
+        provider_field(),
+        model_field("Reading, not judging: a cheap model will do."),
         effort_field(),
+        temperature_field(),
+        max_tokens_field(),
+        max_per_run_field(),
         prompt_file_field(),
-        Field("prompt_version", "text", "A label for this pass's instructions. "
-                                        "Editing the prompt already re-reads "
-                                        "everything, so this is only for asking "
-                                        "for one without having changed a word."),
-        Field("max_per_run", "int", "Most listings this pass handles in one run."),
     )),
 
-    Section("extract_photos", "pass 2: the photos", (
+    Section("extract_photos", "pass 2 - the photos", (
         "Looks at the photos, says what they show, and picks the ones worth "
         "sending on. Twenty photos of one bike are rarely twenty pieces of "
         "evidence, and the expensive model should not spend its attention on "
         "the near-duplicates."), (
-        Field("enabled", "bool", "Off sends pass 3 the first few photos in the "
-                                 "seller's order instead of a chosen set."),
-        Field("provider", "choice", "Must be a provider that can see images.",
-              choices=PROVIDER_CHOICES),
-        model_field("Must be a model that can see images."),
+        Field("enabled", "bool", "Off sends pass 3 the first few photos instead "
+                                 "of a chosen set."),
+        provider_field("Which API answers. Must be one that sees images."),
+        model_field("Must see images. Cheap is fine: it describes, not decides."),
         effort_field(),
+        temperature_field(),
+        max_tokens_field(),
+        max_per_run_field(),
+        Field("max_photos_in", "int", "Photos it is shown, per listing."),
+        Field("shortlist", "int", "Photos it may pass on to pass 3."),
         prompt_file_field(),
-        Field("prompt_version", "text", "A label for this pass's instructions. "
-                                        "Editing the prompt already re-reads "
-                                        "everything, so this is only for asking "
-                                        "for one without having changed a word."),
-        Field("max_per_run", "int", "Most listings this pass handles in one run."),
-        Field("max_photos_in", "int", "Photos this pass looks at. They are cheap "
-                                      "here and expensive in pass 3, which is the "
-                                      "whole point of the arrangement."),
-        Field("shortlist", "int", "Photos it may pass on. Scoring's own "
-                                  "`max_images` still caps what is sent."),
     )),
 
-    Section("scoring", "pass 3: the verdict", (
+    Section("scoring", "pass 3 - the verdict", (
         "Weighs everything collected - the hard facts, what the two passes "
         "above found, the shortlisted photos and the comparable prices - "
         "against your preferences, and gives the listing a score."), (
-        Field("enabled", "bool", "Off leaves listings unscored. Passes 1 and 2 have "
-                                 "their own switches, so turning all three off is "
-                                 "what stops the API costing anything."),
-        Field("provider", "choice", "", choices=PROVIDER_CHOICES),
-        model_field("Pass 3, the one that decides. This is where a better model "
-                    "earns its price."),
+        Field("enabled", "bool", "Off leaves listings unscored."),
+        provider_field(),
+        model_field("The one that decides. A better model earns its price here."),
         effort_field(),
-        Field("prompt_version", "text", "Bump this after editing your preferences to score "
-                                        "everything again against them."),
-        Field("preferences_file", "text", "", wide=True),
-        Field("max_images", "int", "Photos sent with each listing. Rust, crash damage and "
-                                   "worn tyres are visible and not mentioned in the text, "
-                                   "but each costs about 1.5k input tokens. 0 scores on "
-                                   "text alone."),
-        Field("rescore_on_change", "bool", "Score a listing again when its price or text "
-                                           "changes."),
-        Field("max_per_run", "int", "Most listings to score in one run - the ceiling on what "
-                                    "a single run can spend."),
+        temperature_field(),
+        max_tokens_field(),
+        max_per_run_field(),
+        Field("max_images", "int", "Shortlisted photos sent with each listing. "
+                                   "About 1.5k tokens each; 0 scores on text alone."),
+        Field("rescore_on_change", "bool", "Score again when the ad, your "
+                                           "preferences or these settings change."),
+        Field("preferences_file", "text", "Where the five boxes above are saved.",
+              wide=True),
     )),
 
     Section("email", "email", "", (
@@ -294,6 +303,14 @@ SECTIONS = (
         Field("port", "int", "Takes effect when `karpm web` is restarted."),
     )),
 )
+
+
+# The three passes are edited beside their prompts, on the prompts page; the
+# rest of the file is the config page. SECTIONS stays whole because the form
+# parser and the drift test read it.
+PASS_NAMES = ("extract_text", "extract_photos", "scoring")
+PASS_SECTIONS = tuple(s for s in SECTIONS if s.name in PASS_NAMES)
+CONFIG_SECTIONS = tuple(s for s in SECTIONS if s.name not in PASS_NAMES)
 
 
 def input_name(section: str, key: str) -> str:

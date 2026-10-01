@@ -52,6 +52,15 @@ def image(path: str | Path) -> dict:
     return {"type": "image", "path": str(path)}
 
 
+def image_stub(label: str) -> dict:
+    """An image that is not there: `label` goes where the bytes would.
+
+    Only for showing what a request looks like. A pass never builds one, and a
+    provider that is really sending would be sending a label to the API.
+    """
+    return {"type": "image", "stub": label}
+
+
 @dataclass
 class Request:
     """One question, in terms no particular API owns."""
@@ -61,6 +70,11 @@ class Request:
     schema: Any                     # a pydantic model class
     model: str
     effort: str = "medium"
+    # None means not sent, which is what the thinking models require: they
+    # reject the parameter outright. The provider leaves it out for those
+    # whatever this says, so a value set for one model survives a look at
+    # another.
+    temperature: float | None = None
     max_tokens: int = 4000
     # The system prompt is identical for every listing in a run, so it is worth
     # caching where the provider can.
@@ -79,6 +93,10 @@ class Provider(Protocol):
         ...
 
     def complete(self, request: Request) -> Reply:
+        ...
+
+    def wire_body(self, request: Request) -> str:
+        """The request as it would go over the wire, byte for byte, unsent."""
         ...
 
 
@@ -107,6 +125,21 @@ def _thinking_for(request: Request) -> dict:
     return {"thinking": {"type": "adaptive"}, "output_config": {"effort": effort}}
 
 
+def _sampling_for(request: Request) -> dict:
+    """The temperature, for a model that takes one - or nothing.
+
+    The adaptive-thinking generation rejects any sampling parameter with a
+    400, so it is sent only to a model the catalogue says still has one. A
+    model missing from the catalogue is assumed to be of the newer kind.
+    """
+    known = models.get(request.model)
+    if request.temperature is None or known is None or not known.sampling:
+        return {}
+    # The SDK no longer has a keyword for it, the parameter being gone from
+    # every current model; `extra_body` puts it in the request all the same.
+    return {"extra_body": {"temperature": request.temperature}}
+
+
 class AnthropicProvider:
     """Claude, through the official SDK."""
 
@@ -128,19 +161,8 @@ class AnthropicProvider:
     def complete(self, request: Request) -> Reply:
         import anthropic
 
-        system = [{"type": "text", "text": request.system}]
-        if request.cache_system:
-            system[0]["cache_control"] = {"type": "ephemeral"}
-
         try:
-            response = self.client.messages.parse(
-                model=request.model,
-                max_tokens=request.max_tokens,
-                system=system,
-                messages=[{"role": "user", "content": self._content(request.blocks)}],
-                output_format=request.schema,
-                **_thinking_for(request),
-            )
+            response = self._send(self.client, request)
         except anthropic.APIError as exc:
             raise ProviderError(f"{request.model}: {exc}") from exc
 
@@ -158,11 +180,70 @@ class AnthropicProvider:
             cached_tokens=getattr(usage, "cache_read_input_tokens", 0) or 0,
         )
 
+    def wire_body(self, request: Request) -> str:
+        """The JSON the SDK would put on the wire for this request.
+
+        Produced by the SDK itself, against a transport that records the
+        request and answers it with an empty message, rather than assembled
+        here from what the SDK is believed to do. The one is what the API
+        gets; the other is a guess that drifts.
+        """
+        import anthropic
+        import httpx2 as httpx
+
+        captured: dict = {}
+
+        def record(http_request):
+            captured["body"] = http_request.content.decode("utf-8")
+            return httpx.Response(200, json={
+                "id": "msg_unsent", "type": "message", "role": "assistant",
+                "model": request.model, "stop_reason": "end_turn",
+                "content": [{"type": "text", "text": "{}"}],
+                "usage": {"input_tokens": 0, "output_tokens": 0},
+            })
+
+        client = anthropic.Anthropic(
+            api_key="unsent",
+            http_client=anthropic.DefaultHttpxClient(transport=httpx.MockTransport(record)),
+            max_retries=0,
+        )
+        try:
+            self._send(client, request)
+        except Exception:
+            # The empty answer fails the schema; by then the request has been
+            # recorded, which is all that was wanted of the call.
+            if "body" not in captured:
+                raise
+        return captured["body"]
+
+    def _send(self, client, request: Request):
+        """One call, built the same way whoever is on the other end."""
+        return client.messages.parse(**self._params(request))
+
+    def _params(self, request: Request) -> dict:
+        system = [{"type": "text", "text": request.system}]
+        if request.cache_system:
+            system[0]["cache_control"] = {"type": "ephemeral"}
+        return {
+            "model": request.model,
+            "max_tokens": request.max_tokens,
+            "system": system,
+            "messages": [{"role": "user", "content": self._content(request.blocks)}],
+            "output_format": request.schema,
+            **_thinking_for(request),
+            **_sampling_for(request),
+        }
+
     def _content(self, blocks: list[dict]) -> list[dict]:
         out = []
         for block in blocks:
             if block["type"] == "text":
                 out.append({"type": "text", "text": block["text"]})
+                continue
+            if "stub" in block:
+                # Showing, not sending: the label stands where the bytes go.
+                out.append({"type": "image", "source": {
+                    "type": "base64", "media_type": "image/jpeg", "data": block["stub"]}})
                 continue
             path = Path(block["path"])
             out.append({
