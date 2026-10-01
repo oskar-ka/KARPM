@@ -4,7 +4,8 @@
    it for the others; the input still submits, so a value set for one model
    survives a look at another. #}
 <div class="field {{ 'bad' if error }}"
-     {% if spec.shown_for %}data-shown-for="{{ spec.shown_for | join(' ') }}"{% endif %}>
+     {% if spec.shown_for %}data-shown-for="{{ spec.shown_for | join(' ') }}"
+     data-unknown-model="{{ 'show' if spec.shown_for_unknown else 'hide' }}"{% endif %}>
   <label for="{{ name }}">{{ spec.key }}</label>
   <div class="control">
     {% if spec.kind == 'bool' %}

@@ -120,6 +120,12 @@ def _render_prompt(request, what: str = "") -> str:
     else:
         settings.append("thinking    not sent - this model takes neither "
                         "adaptive thinking nor an effort level")
+    sampling = provider._sampling_for(request)
+    if sampling:
+        settings.append(f"temperature {sampling['extra_body']['temperature']}")
+    elif request.temperature is not None:
+        settings.append(f"temperature {request.temperature} is set but not sent - "
+                        "this model rejects it")
     if request.cache_system:
         settings.append("caching     the system prompt is marked for caching; "
                         "the rest is not")

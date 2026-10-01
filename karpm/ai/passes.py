@@ -13,6 +13,7 @@ and a neutral block list; `provider.py` turns that into an API call.
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 from pathlib import Path
 
@@ -113,34 +114,72 @@ def load_prompt(kind: str, cfg) -> str:
     return defaults()[kind]
 
 
-def prompt_version(kind: str, cfg) -> str:
+def settings(kind: str, cfg) -> dict:
+    """The settings that shape a pass's answer, as the version hashes them.
+
+    What is sent to the model and nothing else: the pass's switch, its queue
+    size and where its prompt is stored change nothing about what comes back,
+    so they are left out - flipping one must not send every listing through
+    the pass again.
+    """
+    out = {"provider": cfg.provider, "model": cfg.model, "effort": cfg.effort,
+           "temperature": cfg.temperature, "max_tokens": cfg.max_tokens}
+    if kind == "photos":
+        out["max_photos_in"] = cfg.max_photos_in
+        out["shortlist"] = cfg.shortlist
+    return out
+
+
+def digest(prompt: str, params: dict) -> str:
+    """Eight hex characters standing for one prompt and one set of parameters.
+
+    The same input always gives the same eight characters, so an edit you undo
+    costs nothing, and anything that would change the answer changes them.
+    """
+    canonical = json.dumps({"prompt": prompt, "params": params}, sort_keys=True,
+                           ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:8]
+
+
+def version(kind: str, cfg, prompt: str | None = None) -> str:
     """The key that decides whether stored findings are still current.
 
-    The configured version and the prompt itself, together: editing the prompt
-    is exactly as much of a change as bumping the version by hand, and nobody
-    remembers to bump it by hand.
+    A hash of the prompt's text and of the settings that shape the answer. It
+    replaces a version typed into the config by hand: editing the prompt or
+    pointing the pass at another model is exactly as much of a change as
+    bumping a number, and nobody remembers to bump a number.
     """
-    digest = hashlib.sha256(load_prompt(kind, cfg).encode("utf-8")).hexdigest()[:8]
-    return f"{cfg.prompt_version}+{digest}"
+    return digest(prompt if prompt is not None else load_prompt(kind, cfg),
+                  settings(kind, cfg))
 
 
 # --- pass 1 and 2 requests -------------------------------------------------
 
-def text_request(row, cfg, prompt: str | None = None) -> provider.Request:
-    body = [
-        f"Title: {row['title']}",
-        f"Price: {row['price_eur']} EUR" if row["price_eur"] else "Price: not stated",
-        "",
-        "Description, verbatim:",
-        row["description"] or "(the ad has no description)",
-    ]
+def _request(kind: str, cfg, prompt: str | None, blocks: list[dict]) -> provider.Request:
+    """One request for a pass, with the settings every request of it carries."""
     return provider.Request(
-        system=prompt if prompt is not None else load_prompt("text", cfg),
-        blocks=[provider.text("\n".join(body))],
-        schema=TextFindings,
+        system=prompt if prompt is not None else load_prompt(kind, cfg),
+        blocks=blocks,
+        schema=TextFindings if kind == "text" else PhotoFindings,
         model=cfg.model,
         effort=cfg.effort,
+        temperature=cfg.temperature,
+        max_tokens=cfg.max_tokens,
     )
+
+
+def _text_body(title: str, price: str, description: str) -> str:
+    return "\n".join([f"Title: {title}", f"Price: {price}", "",
+                      "Description, verbatim:", description])
+
+
+def text_request(row, cfg, prompt: str | None = None) -> provider.Request:
+    body = _text_body(
+        row["title"],
+        f"{row['price_eur']} EUR" if row["price_eur"] else "not stated",
+        row["description"] or "(the ad has no description)",
+    )
+    return _request("text", cfg, prompt, [provider.text(body)])
 
 
 # --- pass 2: what the photos show -----------------------------------------
@@ -207,18 +246,39 @@ def photo_request(conn, row, cfg, prompt: str | None = None) -> provider.Request
     if not shown:
         return None
 
-    blocks = [provider.text(
-        f"{row['title']}. {len(shown)} photograph(s) follow, "
-        f"at positions {', '.join(str(p) for p, _ in shown)}. "
-        f"Shortlist at most {cfg.shortlist}.")]
+    blocks = [provider.text(_photo_intro(row["title"], str(len(shown)),
+                                         ", ".join(str(p) for p, _ in shown), cfg))]
     for position, path in shown:
-        blocks.append(provider.text(f"Photo at position {position}:"))
+        blocks.append(provider.text(_photo_label(str(position))))
         blocks.append(provider.image(path))
 
-    return provider.Request(
-        system=prompt if prompt is not None else load_prompt("photos", cfg),
-        blocks=blocks,
-        schema=PhotoFindings,
-        model=cfg.model,
-        effort=cfg.effort,
-    )
+    return _request("photos", cfg, prompt, blocks)
+
+
+def _photo_intro(title: str, count: str, positions: str, cfg) -> str:
+    return (f"{title}. {count} photograph(s) follow, at positions {positions}. "
+            f"Shortlist at most {cfg.shortlist}.")
+
+
+def _photo_label(position: str) -> str:
+    return f"Photo at position {position}:"
+
+
+# --- the shape of a request, with nothing of any ad in it ------------------
+
+def template_request(kind: str, cfg, prompt: str | None = None) -> provider.Request:
+    """A pass's request with placeholders where the ad's own fields go.
+
+    Built by the same code as the real thing, so what it shows is what is
+    sent: only the values are stand-ins. The photo pass is shown with one
+    photograph; a real request repeats the label and the image once per photo.
+    """
+    if kind == "text":
+        body = _text_body("{title}", "{price} EUR, or 'not stated'", "{description}")
+        return _request("text", cfg, prompt, [provider.text(body)])
+    blocks = [
+        provider.text(_photo_intro("{title}", "{count}", "{positions}", cfg)),
+        provider.text(_photo_label("{position}")),
+        provider.image_stub("{photo, base64 - one label and one image per photo}"),
+    ]
+    return _request("photos", cfg, prompt, blocks)

@@ -667,9 +667,39 @@ def extraction_backlog(conn: sqlite3.Connection, kind: str, prompt_version: str)
                or row["done_hash"] != current)
 
 
+def extraction_stale(conn: sqlite3.Connection, kind: str, prompt_version: str) -> int:
+    """How many stored readings a changed prompt or setting has made stale.
+
+    Unlike the backlog this leaves out listings never read at all: those are
+    owed a first look whatever the version says, and are not what "to read
+    again" means on the page that just changed it.
+    """
+    return sum(1 for row, current in _extraction_candidates(conn, kind)
+               if row["extraction_id"] is not None
+               and row["done_version"] != prompt_version)
+
+
 def _source_hash(conn: sqlite3.Connection, row: sqlite3.Row, kind: str) -> str | None:
     """What this pass's answer was computed from."""
     return row["content_hash"] if kind == "text" else image_set_hash(conn, row["id"])
+
+
+def score_backlog(conn: sqlite3.Connection, version: str) -> int:
+    """How many stored verdicts a changed prompt or setting has made stale.
+
+    Only listings that have a verdict: one never scored is owed a first look
+    whatever the version says, and is not what "to score again" means.
+    """
+    return conn.execute(
+        """
+        SELECT COUNT(*) FROM listings l
+        JOIN scores s ON s.id = (
+            SELECT id FROM scores WHERE listing_id = l.id ORDER BY scored_at DESC LIMIT 1
+        )
+        WHERE l.is_active = 1 AND s.prompt_version IS NOT ?
+        """,
+        (version,),
+    ).fetchone()[0]
 
 
 def add_score(conn: sqlite3.Connection, listing_id: str, score: dict) -> int:

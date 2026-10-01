@@ -260,18 +260,32 @@ karpm images --limit 200
 ## The three passes
 
 Three separate model calls look at a listing, in this order. Each has its own
-section in `config.toml`, its own model, its own `provider`, its own
-`prompt_version` and its own `enabled`.
+section in `config.toml`, its own model, its own `provider` and its own
+`enabled`.
 
 | Pass | Section | What it does | Goes stale when |
 |---|---|---|---|
-| 1 | `[extract_text]` | Reads the description and writes down what the seller claims: work done, faults admitted, what is included, what to ask about. | The ad's text or price changes, or its prompt does. |
-| 2 | `[extract_photos]` | Looks at the photos, says what they show, and shortlists the few worth a second look. | A photo is added, removed or replaced, or its prompt changes. |
-| 3 | `[scoring]` | Weighs the hard facts, what passes 1 and 2 found, the shortlisted photos and the comparable prices against `preferences.md`. | The ad changes, `preferences.md` changes, or `scoring.prompt_version` changes. |
+| 1 | `[extract_text]` | Reads the description and writes down what the seller claims: work done, faults admitted, what is included, what to ask about. | The ad's text or price changes, or its version does. |
+| 2 | `[extract_photos]` | Looks at the photos, says what they show, and shortlists the few worth a second look. | A photo is added, removed or replaced, or its version changes. |
+| 3 | `[scoring]` | Weighs the hard facts, what passes 1 and 2 found, the shortlisted photos and the comparable prices against `preferences.md`. | The ad changes, or its version does. |
 
 All three are edited on the **prompts** page of the web UI — passes 1 and 2 as
-the instructions they are given, pass 3 as what you want out of a bike. See
+the instructions they are given, pass 3 as what you want out of a bike, and
+each beside the settings of the model that runs it. See
 [The prompts page](#the-prompts-page).
+
+**A pass's version is a hash, not a number you bump.** Eight hex characters of
+the prompt (for pass 3: the rubric and `preferences.md`) together with the
+settings that shape the answer — `provider`, `model`, `effort`, `temperature`,
+`max_tokens`, and for pass 2 `max_photos_in` and `shortlist`. It is stored with
+every finding and verdict, and a listing whose stored version differs from the
+current one is due again. So editing a prompt, rewriting your preferences or
+pointing a pass at another model all send every listing through that pass
+again, without anyone remembering to bump anything; turning a pass off,
+changing its queue size or moving its prompt file do not. The prompts page
+shows the current hash beside each pass. Rows written before this scheme carry
+the old label (`v1`, or `v1+` and a digest) and are read or scored once more
+on the first run after the upgrade.
 
 They are separate because they are different jobs — a model that is good at
 pulling `Reifen neu, Kette bei 40tkm` out of a paragraph need not be the one
@@ -291,27 +305,35 @@ no vision can serve it; pass 2 refuses to run on one and says so.
 
 ### Choosing a model
 
-`karpm/ai/models.py` is the list of models the config page offers, with what
-each costs and what it accepts. The config page builds its dropdown from it and
-the provider decides from it what to put in a request, so the two cannot drift
+`karpm/ai/models.py` is the list of models the prompts page offers, with what
+each costs and what it accepts. The page builds its dropdown from it and the
+provider decides from it what to put in a request, so the two cannot drift
 apart — which is the bug that made it a list: the page offered an effort level
 for a model that rejects the parameter outright, and every listing in the queue
 came back a 400.
 
 **Not every model takes an effort level.** The newer ones think adaptively and
 take `effort`; Haiku 4.5 takes neither and fails the whole request rather than
-ignoring them. The config page hides the `effort` row for a model that has no
+ignoring them. The prompts page hides the `effort` row for a model that has no
 use for it, and the request is built without the setting rather than with one
 the model would reject. The stored value is left alone either way, so switching
 back brings it back.
+
+**Not every model takes a temperature**, and it is the other way round: the
+thinking models reject one with a 400, so `temperature` is only shown for, and
+only sent to, a model the list says still takes it (Haiku 4.5). Unset means
+nothing is sent and the model uses its default. A model not in the list is
+assumed to be of the newer kind and gets neither the row nor the parameter.
+
+`max_tokens` is the ceiling on the answer, for every model.
 
 **A model not in the list still works.** Write it into `config.toml` by hand and
 the page offers it back marked *not in the list* rather than replacing it with
 whichever option came first — a save about something else must not quietly
 change which model you are paying. An unknown model is assumed to take adaptive
-thinking and an effort level, since a model missing from the list is newer than
-the list rather than older. If that assumption is wrong you get a 400 naming the
-model, and the fix is to pick one from the dropdown.
+thinking and an effort level and no temperature, since a model missing from the
+list is newer than the list rather than older. If that assumption is wrong you
+get a 400 naming the model, and the fix is to pick one from the dropdown.
 
 Prices shown on the page are per million tokens as of the date in that file.
 They are there to make the choice an informed one, not to bill anything.
@@ -347,7 +369,7 @@ karpm extract --photos-only    # pass 2: the photos
 | `--photos-only` | off | Pass 2 only. |
 
 A listing is read when it has never been read, when what it was read from has
-changed, or when that pass's `prompt_version` changed. A listing queued for
+changed, or when that pass's version (its prompt and settings) changed. A listing queued for
 re-fetching is skipped: its stored text is known to be out of date, so reading
 it now buys an answer about words that are about to be replaced. An ad with no
 downloaded photos is skipped by pass 2 rather than read as having none.
@@ -419,7 +441,7 @@ karpm score
 
 No options; behaviour comes from `[scoring]` and `[email]` in `config.toml`.
 A listing is scored when it has no score, when its price or text changed since
-the last one, or when `prompt_version` changed. It does not run passes 1 and 2
+the last one, or when the scoring version (rubric, preferences and settings) changed. It does not run passes 1 and 2
 first — `karpm run`, the daemon and the dashboard do that.
 
 **Exit code 1** if any instant alert failed to send. Scoring failures for an
@@ -642,20 +664,15 @@ each photo underneath.
 
 ### The prompts page
 
-Everything the three passes are told, in the order they run.
+Everything about how an ad is judged: what the three passes are told, in the
+order they run, and beside each prompt the settings of the model that runs it.
+Nothing about evaluation is on the config page.
 
 Passes 1 and 2 get one text box each — their instructions, saved to the file named
 by `extract_text.prompt_file` and `extract_photos.prompt_file`. With no file
 there, or an empty one, the pass uses the prompt built into the code, so a fresh
 install works without writing anything and emptying the box puts the original
 back.
-
-**Editing a prompt re-reads every listing.** The prompt's own text is part of
-the key that decides whether stored findings are still current, so a changed
-prompt makes them all stale without anyone having to remember to bump
-`prompt_version`. That costs credits, and the page says how many listings it
-just queued. `karpm extract-one <id>` is the cheap way to try a wording on one
-ad first.
 
 Pass 3 is not a prompt but a description of what you want, and it is five boxes
 rather than one: **About the bike**, **What it needs**, **What I would like**,
@@ -670,14 +687,40 @@ this page existed — is not shown on the page and is not written back. The
 version before the save is kept as `preferences.md.bak`, as for every file the
 UI writes.
 
+**The settings down the right** are the pass's section of `config.toml`:
+`provider` first, then `model`, then `effort`, `temperature` and `max_tokens`,
+then whatever is particular to the pass — queue size, photo counts, where the
+prompt or the preferences are saved. A setting the chosen model has no use for
+is hidden rather than offered — see [Choosing a model](#choosing-a-model). The
+switch in the pane's heading is the pass's `enabled`. Below the settings is the
+pass's **version**, the hash described under [The three passes](#the-three-passes).
+It is shown as saved; it changes when a save changes the prompt or a setting
+that shapes the answer.
+
+One **save** writes all of it, and writes nothing if any setting is refused: a
+prompt on disk disagreeing with the settings beside it would be worse than a
+page that comes back with the problem marked. The banner says how many stored
+readings and verdicts the save made stale — that costs credits on the next run,
+and `karpm extract-one <id>` or `karpm score-one <id>` is the cheap way to try a
+change on one ad first.
+
+**show what is sent**, at the bottom, opens a pop-up with the three requests as
+JSON — the exact text each pass would put on the wire, produced by the SDK from
+the page as it stands, saved or not, so an edit can be looked at before it is
+saved. The only difference from a real request is the values in `{braces}`,
+which stand where the ad's own fields go; a real request also leaves out lines
+for facts the ad does not state and repeats the photo block once per photo. It
+is shown re-indented for reading, and *as on the wire* shows it byte for byte.
+On the command line, `--show-prompt` on `extract-one`, `score-one` and `trial`
+renders the same request for a real listing.
+
 ### Editing the settings
 
 **Config** is a field per setting, grouped by the table it lives in, with the
-setting's name on the left and a note on what it does on the right. A setting
-that means nothing for the model a pass is pointed at is hidden rather than
-offered — see [Choosing a model](#choosing-a-model). **Searches**
-is the same, one block per `[[searches]]` entry, with a button to add another
-and a link to remove one.
+setting's name on the left and a note on what it does on the right — everything
+in the file except the searches and the three passes, which have their own
+pages. **Searches** is the same, one block per `[[searches]]` entry, with a
+button to add another and a link to remove one.
 
 Numbers are checked as numbers and choices against their options, so a typo is
 pointed at rather than saved; when anything is rejected nothing is written at

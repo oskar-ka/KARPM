@@ -233,8 +233,13 @@ def test_quotes_in_a_search_name_do_not_break_the_file(client, app):
 
 
 def prompt_form(client, overrides=None):
-    """The prompts page as it would submit itself, with a few boxes changed."""
+    """The prompts page as it would submit itself, with a few boxes changed.
+
+    Three prompts and, beside each, the settings of its pass - all of it, as a
+    browser would send it.
+    """
     from karpm import preferences as pr
+    from karpm.web import fields
     data = {f"pref_{part.key}": "" for part in pr.PARTS}
     page = client.get("/prompts").get_data(as_text=True)
     for kind in ("text", "photos"):
@@ -242,6 +247,7 @@ def prompt_form(client, overrides=None):
         # Unescaped, because that is what a browser submits. Left escaped, every
         # save would look like an edit and rewrite a file nobody touched.
         data[f"prompt_{kind}"] = html.unescape(found.group(1)) if found else ""
+    data.update(_fields_on(page, fields.PASS_SECTIONS))
     data.update(overrides or {})
     return data
 
@@ -268,8 +274,16 @@ def form(client, overrides=None):
     """
     from karpm.web import fields
     page = client.get("/config").get_data(as_text=True)
+    data = _fields_on(page, fields.CONFIG_SECTIONS)
+    data.update(overrides or {})
+    return data
+
+
+def _fields_on(page, sections):
+    """Every setting of these sections, as the rendered page is carrying it."""
+    from karpm.web import fields
     data = {}
-    for section in fields.SECTIONS:
+    for section in sections:
         for spec in section.fields:
             name = fields.input_name(section.name, spec.key)
             if spec.kind == "bool":
@@ -277,7 +291,6 @@ def form(client, overrides=None):
                     data[name] = "1"
             else:
                 data[name] = _shown(page, name)
-    data.update(overrides or {})
     return data
 
 
@@ -292,18 +305,24 @@ def _shown(page, name):
     return ""
 
 
-def test_the_config_page_has_a_field_for_every_setting(client):
+def test_every_setting_has_a_field_on_one_of_the_two_pages(client):
+    """The three passes are edited beside their prompts; everything else is
+    the config page. Between them, every setting - and none twice."""
     from karpm.web import fields
-    page = client.get("/config").get_data(as_text=True)
-    for section in fields.SECTIONS:
-        for spec in section.fields:
-            assert f'id="{fields.input_name(section.name, spec.key)}"' in page, spec.key
+    config = client.get("/config").get_data(as_text=True)
+    prompts = client.get("/prompts").get_data(as_text=True)
+    assert set(fields.CONFIG_SECTIONS) | set(fields.PASS_SECTIONS) == set(fields.SECTIONS)
+    for page, sections in ((config, fields.CONFIG_SECTIONS), (prompts, fields.PASS_SECTIONS)):
+        for section in sections:
+            for spec in section.fields:
+                assert f'id="{fields.input_name(section.name, spec.key)}"' in page, spec.key
+    assert 'id="scoring__model"' not in config
 
 
 def test_the_config_page_shows_the_current_values(client):
     page = client.get("/config").get_data(as_text=True)
     assert _shown(page, "web__port") == "8080"
-    assert _shown(page, "scoring__effort") == "medium"
+    assert _shown(page, "scrape__timeout_s") == "30"
 
 
 def test_saving_changes_one_value(client, app):
@@ -393,7 +412,7 @@ def test_retry_delays_are_edited_as_a_comma_separated_list(client, app):
 def test_a_choice_outside_its_options_is_refused(client, app):
     _, config_path, _ = app
     before = config_path.read_text(encoding="utf-8")
-    resp = client.post("/config", data=form(client, {"scoring__effort": "maximum"}))
+    resp = client.post("/prompts", data=prompt_form(client, {"scoring__effort": "maximum"}))
     assert b"must be one of" in resp.get_data()
     assert config_path.read_text(encoding="utf-8") == before
 
@@ -673,19 +692,19 @@ def test_a_setting_the_file_lacks_is_added_as_one_line(client, app):
     """And a key that is not in the file yet costs exactly one new line."""
     _, config_path, _ = app
     before = config_path.read_text(encoding="utf-8").splitlines()
-    assert not any(line.startswith("max_images") for line in before)
-    client.post("/config", data=form(client, {"scoring__max_images": "5"}))
+    assert not any(line.startswith("max_delist_checks") for line in before)
+    client.post("/config", data=form(client, {"scrape__max_delist_checks": "5"}))
     after = config_path.read_text(encoding="utf-8").splitlines()
     assert len(after) == len(before) + 1
-    assert set(after) - set(before) == {"max_images = 5"}
+    assert set(after) - set(before) == {"max_delist_checks = 5"}
 
 
 def test_the_error_banner_names_the_fields(client):
     """A long page of settings needs to say which one is wrong."""
     resp = client.post("/config", data=form(client, {"web__port": "eighty",
-                                                     "scoring__max_images": "two"}))
+                                                     "scrape__timeout_s": "soon"}))
     banner = resp.get_data(as_text=True)
-    assert "check scoring.max_images, web.port" in banner
+    assert "check scrape.timeout_s, web.port" in banner
 
 
 def test_the_searches_banner_counts_from_one(client):
@@ -1073,7 +1092,7 @@ def _store_findings(conf_path, listing_id="2847612345"):
                           "quote": "Kette und Ritzel bei 40tkm neu"}],
          "selling_reason": "buying a bigger bike", "negotiable": True},
         provider="anthropic", model="claude-haiku-4-5",
-        prompt_version=passes.prompt_version("text", Config().extract_text),
+        prompt_version=passes.version("text", Config().extract_text),
         source_hash=row["content_hash"])
     db.save_extraction(
         conn, listing_id, "photos",
@@ -1083,7 +1102,7 @@ def _store_findings(conf_path, listing_id="2847612345"):
                           "concern": "scuffed bar end"}],
          "shortlist": [0]},
         provider="anthropic", model="claude-haiku-4-5",
-        prompt_version=passes.prompt_version("photos", Config().extract_photos),
+        prompt_version=passes.version("photos", Config().extract_photos),
         source_hash=db.image_set_hash(conn, listing_id))
     conn.commit()
     conn.close()
@@ -1147,12 +1166,12 @@ def test_a_pass_switched_off_says_so_rather_than_reading_as_done(client, app):
     assert "photos pass off" in body
 
 
-# --- picking a model -----------------------------------------------------
+# --- picking a model, beside its prompt ----------------------------------
 
 def test_the_model_is_a_dropdown_of_what_we_know(client):
     """Typed by hand it was a way to name a model the code cannot reason about
     - and one of them rejects the parameters every request was sending."""
-    body = client.get("/config").get_data(as_text=True)
+    body = client.get("/prompts").get_data(as_text=True)
     assert 'name="scoring__model"' in body and "<select" in body
     for model_id in ("claude-haiku-4-5", "claude-opus-5"):
         assert f'value="{model_id}"' in body
@@ -1160,13 +1179,39 @@ def test_the_model_is_a_dropdown_of_what_we_know(client):
     assert "$1/$5 per Mtok" in body and "$5/$25 per Mtok" in body
 
 
+def test_provider_comes_first_and_model_second_beside_every_prompt(client):
+    from karpm.web import fields
+    body = client.get("/prompts").get_data(as_text=True)
+    for section in fields.PASS_SECTIONS:
+        keys = [spec.key for spec in section.fields if spec.key != "enabled"]
+        assert keys[:2] == ["provider", "model"], section.name
+        assert "temperature" in keys and "max_tokens" in keys, section.name
+        first = body.index(f'id="{section.name}__provider"')
+        assert first < body.index(f'id="{section.name}__model"') \
+            < body.index(f'id="{section.name}__max_tokens"')
+
+
 def test_effort_says_which_models_it_applies_to(client):
     """Haiku takes no effort level and errors when sent one, so the row is
     hidden for it rather than offered as a way to break every call."""
-    body = client.get("/config").get_data(as_text=True)
+    body = client.get("/prompts").get_data(as_text=True)
     assert 'data-shown-for="claude-sonnet-5 claude-opus-5 claude-fable-5-1"' in body
     assert "claude-haiku-4-5" not in re.search(
         r'data-shown-for="([^"]*)"', body).group(1)
+
+
+def test_temperature_is_offered_only_to_models_that_take_one(client):
+    """The thinking models reject it with a 400. A model the list has never
+    heard of is newer, so it is assumed to be one of those."""
+    body = client.get("/prompts").get_data(as_text=True)
+    row = re.search(r'<div class="field[^"]*"\s+data-shown-for="([^"]*)"\s+'
+                    r'data-unknown-model="([^"]*)"[^>]*>\s*<label for="scoring__temperature"',
+                    body)
+    assert row is not None
+    assert row.group(1) == "claude-haiku-4-5" and row.group(2) == "hide"
+    effort = re.search(r'data-shown-for="[^"]*"\s+data-unknown-model="([^"]*)"[^>]*>\s*'
+                       r'<label for="scoring__effort"', body)
+    assert effort.group(1) == "show"
 
 
 def test_a_model_set_by_hand_is_offered_back_rather_than_replaced(client, app):
@@ -1179,7 +1224,7 @@ def test_a_model_set_by_hand_is_offered_back_rather_than_replaced(client, app):
             "[scoring]", '[scoring]\nmodel = "claude-opus-9-unreleased"'),
         encoding="utf-8")
 
-    body = client.get("/config").get_data(as_text=True)
+    body = client.get("/prompts").get_data(as_text=True)
     assert 'value="claude-opus-9-unreleased" selected' in body
     assert "not in the list" in body
 
@@ -1191,8 +1236,8 @@ def test_saving_keeps_a_model_the_dropdown_has_never_heard_of(client, app):
             "[scoring]", '[scoring]\nmodel = "claude-opus-9-unreleased"'),
         encoding="utf-8")
 
-    data = form(client, {"scoring__max_per_run": "42"})   # a save about something else
-    assert client.post("/config", data=data).status_code == 302
+    data = prompt_form(client, {"scoring__max_per_run": "42"})   # a save about something else
+    assert client.post("/prompts", data=data).status_code == 302
 
     conf = load_config(config_path)
     assert conf.scoring.model == "claude-opus-9-unreleased"
@@ -1201,10 +1246,142 @@ def test_saving_keeps_a_model_the_dropdown_has_never_heard_of(client, app):
 
 def test_a_blank_model_is_refused_rather_than_written(client, app):
     _, config_path, _ = app
-    response = client.post("/config", data=form(client, {"scoring__model": ""}))
+    response = client.post("/prompts", data=prompt_form(client, {"scoring__model": ""}))
     assert response.status_code == 200          # back with the error, not saved
     assert "this cannot be empty" in response.get_data(as_text=True)
     assert load_config(config_path).scoring.model == "claude-opus-5"
+
+
+def test_a_refused_save_writes_nothing_at_all(client, app):
+    """Half a page saved would leave a prompt on disk disagreeing with the
+    settings beside it, so a bad setting holds back the prompts too."""
+    _, config_path, work = app
+    before = (work / "preferences.md").read_text(encoding="utf-8")
+    response = client.post("/prompts", data=prompt_form(
+        client, {"scoring__max_tokens": "lots", "pref_about": "A GS."}))
+    assert response.status_code == 200
+    assert (work / "preferences.md").read_text(encoding="utf-8") == before
+    # ...and comes back with what was typed, prompts included.
+    assert "A GS." in response.get_data(as_text=True)
+
+
+def test_a_setting_saved_beside_the_prompt_lands_in_the_config(client, app):
+    _, config_path, _ = app
+    client.post("/prompts", data=prompt_form(
+        client, {"scoring__model": "claude-fable-5-1", "extract_text__temperature": "0.2",
+                 "extract_photos__max_tokens": "2000"}))
+    conf = load_config(config_path)
+    assert conf.scoring.model == "claude-fable-5-1"
+    assert conf.extract_text.temperature == 0.2
+    assert conf.extract_photos.max_tokens == 2000
+    # ...and the config page no longer carries any of them.
+    assert "claude-fable-5-1" not in client.get("/config").get_data(as_text=True)
+
+
+def test_a_changed_model_shows_as_a_new_version_and_a_re_score(client, app):
+    """The version is a hash of the prompt and the settings, so pointing a
+    pass at another model is as much of a change as editing its prompt - and
+    the page says what that costs before the next run spends it."""
+    _, config_path, _ = app
+    page = client.get("/prompts").get_data(as_text=True)
+    versions = re.findall(r'<code data-version>([0-9a-f]{8})</code>', page)
+    assert len(versions) == 3 and len(set(versions)) == 3
+
+    resp = client.post("/prompts", data=prompt_form(
+        client, {"scoring__model": "claude-fable-5-1"}), follow_redirects=True)
+    body = resp.get_data(as_text=True)
+    assert "saved the settings" in body
+    assert "1 to score again" in body         # the one listing with a verdict
+    after = re.findall(r'<code data-version>([0-9a-f]{8})</code>', body)
+    assert after[:2] == versions[:2] and after[2] != versions[2]
+
+
+def test_turning_a_pass_off_does_not_change_its_version(client, app):
+    # One save first, so the hand-written preferences fixture is in the five-box
+    # form and the next save is about the switch alone.
+    client.post("/prompts", data=prompt_form(client))
+    page = client.get("/prompts").get_data(as_text=True)
+    versions = re.findall(r'<code data-version>([0-9a-f]{8})</code>', page)
+    data = prompt_form(client)
+    data.pop("extract_text__enabled")
+    body = client.post("/prompts", data=data, follow_redirects=True).get_data(as_text=True)
+    assert re.findall(r'<code data-version>([0-9a-f]{8})</code>', body) == versions
+    assert "to read again" not in body
+
+
+# --- what is sent ----------------------------------------------------------
+
+def test_the_pop_up_shows_the_exact_request_of_every_pass(client):
+    """Built by the SDK from the page as it stands, not assembled by hand."""
+    data = prompt_form(client, {"pref_about": "A GS.", "scoring__model": "claude-fable-5-1",
+                                "scoring__effort": "high"})
+    resp = client.post("/prompts/request", data=data)
+    assert resp.status_code == 200
+    shown = resp.get_json()["passes"]
+    assert [p["title"] for p in shown] == [
+        "pass 1 - the description", "pass 2 - the photos", "pass 3 - the verdict"]
+
+    verdict = json.loads(shown[2]["body"])
+    assert verdict["model"] == "claude-fable-5-1"
+    assert verdict["output_config"]["effort"] == "high"
+    assert verdict["thinking"] == {"type": "adaptive"}
+    assert "temperature" not in verdict
+    assert verdict["output_config"]["format"]["type"] == "json_schema"
+    system = verdict["system"][0]
+    assert system["cache_control"] == {"type": "ephemeral"}
+    assert system["text"].endswith("## Logistics")
+    assert "A GS." in system["text"]
+    user = verdict["messages"][0]["content"]
+    assert user[0]["type"] == "text" and "Title: {title}" in user[0]["text"]
+    assert "{description, verbatim}" in user[0]["text"]
+    assert user[1]["type"] == "image" and user[1]["source"]["data"].startswith("{photo")
+
+    reading = json.loads(shown[0]["body"])
+    assert reading["model"] == "claude-haiku-4-5"
+    assert "thinking" not in reading
+    assert reading["messages"][0]["content"][0]["text"].startswith("Title: {title}")
+
+
+def test_the_pop_up_reflects_the_page_not_the_file(client, app):
+    """An edit not yet saved is what you want to see, since the point of
+    looking is deciding whether to save it."""
+    _, config_path, _ = app
+    data = prompt_form(client, {"prompt_text": "Read it, briefly.",
+                                "extract_text__temperature": "0.3"})
+    body = json.loads(client.post("/prompts/request", data=data).get_json()["passes"][0]["body"])
+    assert body["system"][0]["text"] == "Read it, briefly."
+    assert body["temperature"] == 0.3
+    assert load_config(config_path).extract_text.temperature is None
+
+
+def test_the_pop_up_is_the_same_request_a_run_sends(client, app):
+    """The placeholders are the only difference: same system prompt, same
+    parameters, same shape."""
+    from karpm import scoring
+    from karpm.ai import provider as pv
+    _, config_path, _ = app
+    conf = load_config(config_path)
+    client.post("/prompts", data=prompt_form(client))      # the fixture file, in five-box form
+    shown = json.loads(client.post("/prompts/request", data=prompt_form(client))
+                       .get_json()["passes"][2]["body"])
+
+    with opened(config_path) as conn:
+        scorer = scoring.Scorer(conf.scoring, scoring.load_preferences(conf.scoring.preferences_file),
+                                client=pv.AnthropicProvider())
+        real = json.loads(scorer.engine.wire_body(
+            scorer.build_request(conn, db.get_listing(conn, "2847612345"))))
+
+    assert real["system"] == shown["system"]
+    for key in ("model", "max_tokens", "thinking", "output_config"):
+        assert real[key] == shown[key], key
+    assert set(real) == set(shown)
+
+
+def test_the_pop_up_refuses_a_bad_setting_rather_than_guessing(client):
+    resp = client.post("/prompts/request",
+                       data=prompt_form(client, {"scoring__max_tokens": "lots"}))
+    assert resp.status_code == 400
+    assert "scoring.max_tokens" in resp.get_json()["errors"]
 
 
 # --- the prompts page ----------------------------------------------------
@@ -1244,11 +1421,11 @@ def test_an_edited_prompt_makes_every_listing_due_again(client, app):
         config_path.read_text(encoding="utf-8")
         + f'\n[extract_text]\nprompt_file = "{work / "prompts" / "text.md"}"\n',
         encoding="utf-8")
-    before = passes.prompt_version("text", load(config_path).extract_text)
+    before = passes.version("text", load(config_path).extract_text)
 
     client.post("/prompts", data=prompt_form(client, {"prompt_text": "Something else."}))
 
-    after = passes.prompt_version("text", load(config_path).extract_text)
+    after = passes.version("text", load(config_path).extract_text)
     assert after != before, "the prompt's own text is part of the key"
 
 

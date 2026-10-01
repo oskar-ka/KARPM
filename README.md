@@ -247,8 +247,10 @@ tyres are visible and not mentioned in the text.
 
 The three go stale for different reasons, so they re-run independently: an
 edited description sends a listing back through pass 1, a changed gallery
-through pass 2, and either of those — or a bumped `prompt_version` after you
-rewrite your preferences — through pass 3.
+through pass 2, and either of those — or rewritten preferences — through pass
+3. Each pass also carries a version: a short hash of its prompt and of the
+settings that shape its answer, so editing a prompt or switching a model sends
+every listing through that pass again without a number to remember to bump.
 
 Only `anthropic` is implemented as a provider. It is a per-pass setting so that
 a cheaper model can be put behind pass 1 or 2 later without touching anything

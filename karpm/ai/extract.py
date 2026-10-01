@@ -25,11 +25,11 @@ def run_pass(conn, kind: str, cfg, client: provider.Provider | None = None,
     # The queue is read before a provider is built: with nothing due there is
     # no reason to want an API key, and a run that only scrapes must not fail
     # for the lack of one.
-    # The prompt is read once for the whole queue, and its text is part of the
-    # key that decides who is due: editing it is as much a change as bumping
-    # prompt_version by hand, and nobody remembers to do that by hand.
+    # The prompt is read once for the whole queue. Its text, and the settings
+    # that shape the answer, are the key that decides who is due: editing
+    # either is a change, and nobody remembers to bump a number by hand.
     prompt = passes.load_prompt(kind, cfg)
-    version = passes.prompt_version(kind, cfg)
+    version = passes.version(kind, cfg, prompt)
 
     due = db.listings_needing_extraction(conn, kind, version, cfg.max_per_run)
     if not due:
@@ -103,7 +103,7 @@ def save(conn, kind: str, cfg, row, engine, data: dict, reply: provider.Reply,
     db.save_extraction(
         conn, row["id"], kind, data,
         provider=engine.name, model=reply.model or cfg.model,
-        prompt_version=version or passes.prompt_version(kind, cfg),
+        prompt_version=version or passes.version(kind, cfg),
         source_hash=db._source_hash(conn, row, kind),
         input_tokens=reply.input_tokens, output_tokens=reply.output_tokens,
     )
